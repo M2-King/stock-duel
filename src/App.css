@@ -1,0 +1,100 @@
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-width: 0;
+  background: var(--bg-base);
+  overflow: hidden;
+  isolation: isolate;
+  position: relative;
+}
+
+.app-main {
+  flex: 1;
+  min-height: 0;
+  margin-left: var(--sidebar-width);
+  margin-top: var(--header-height);
+  margin-bottom: 36px;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.content-area {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  animation: fade-in var(--transition-slow) ease-out;
+}
+
+.content-area > * {
+  width: 100%;
+  min-width: 0;
+}
+
+/* Section Placeholder */
+.section-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - var(--header-height) - 100px);
+  text-align: center;
+  padding: var(--space-12);
+}
+
+.placeholder-icon {
+  font-size: 4rem;
+  margin-bottom: var(--space-4);
+  opacity: 0.4;
+}
+
+.placeholder-title {
+  font-size: var(--text-2xl);
+  font-weight: var(--font-bold);
+  margin-bottom: var(--space-2);
+}
+
+.placeholder-desc {
+  font-size: var(--text-base);
+  color: var(--text-tertiary);
+  max-width: 400px;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Responsive */
+@media (max-width: 1400px) {
+  .app-main {
+    padding-left: var(--space-3);
+  }
+  .game-info-sidebar {
+    display: none;
+  }
+  .content-area {
+    padding: 0;
+  }
+}
+
+@media (max-width: 768px) {
+  .app-main {
+    margin-left: 0;
+    padding: var(--space-2);
+  }
+  .game-info-sidebar {
+    display: none;
+  }
+  .content-area {
+    padding: 0;
+    max-height: calc(100vh - var(--header-height) - 36px);
+    overflow-y: auto;
+  }
+}
