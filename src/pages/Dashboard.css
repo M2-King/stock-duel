@@ -187,8 +187,8 @@
 
 .chart-body {
   flex: 1;
-  min-height: 220px;
-  padding: var(--space-3) 0;
+  min-height: 280px;
+  padding: 0;
 }
 
 .candlestick-svg {

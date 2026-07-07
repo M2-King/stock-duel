@@ -3,7 +3,7 @@ import { useGameStore } from '../store/gameStore';
 import './Dashboard.css';
 
 export default function Dashboard() {
-  const { currentQuote, klines, holdings, news, players, currentTick } = useGameStore();
+  const { currentQuote, klines, holdings, news, players, currentTick, timelineData } = useGameStore();
 
   const [period, setPeriod] = useState<'1D' | '1W' | '1M' | '3M' | '1Y' | 'ALL'>('1D');
 
@@ -35,28 +35,50 @@ export default function Dashboard() {
   
   const fearGreed = 62;
   
-  // Build candlestick data: real klines for 1D; mock + tail real for longer periods
-  const chartSource = useMemo(() => {
-    if (period === '1D') {
-      if (klines.length >= 5) return klines;
-      // Pre-game filler: generate a tight intraday history around current price
-      return generateMockCandles(30, currentQuote.price, `${currentQuote.symbol}-1D-anchor`);
+  // ============== Chart source dispatch ==============
+  // 1D: intraday timeline (1 point per tick)
+  // 1W+: candlesticks (real klines + mock history)
+  const intradayData = useMemo(() => {
+    if (timelineData.length === 0) {
+      // Pre-game: synthesize an intraday trend leading to current price
+      const seed = `${currentQuote.symbol}-1D-intraday`;
+      let s = 0;
+      for (let i = 0; i < seed.length; i++) s = (s * 31 + seed.charCodeAt(i)) >>> 0;
+      const rand = () => { s = (s * 1664525 + 1013904223) >>> 0; return (s & 0xfffffff) / 0xfffffff; };
+      const points: number[] = [];
+      let price = currentQuote.price * 0.99;
+      const n = 120;
+      for (let i = 0; i < n; i++) {
+        const noise = (rand() - 0.5) * currentQuote.price * 0.0035;
+        const drift = ((currentQuote.price - price) / (n - i)) * 0.5;
+        price += noise + drift;
+        points.push(price);
+      }
+      // Anchor final point to current price
+      points[points.length - 1] = currentQuote.price;
+      return points;
     }
+    return timelineData;
+  }, [timelineData, currentQuote.price, currentQuote.symbol]);
+
+  const candleSource = useMemo(() => {
     // 1W+: mock history + real klines tail
     return [...mockCandles, ...klines];
-  }, [period, klines, mockCandles, currentQuote.price, currentQuote.symbol]);
+  }, [mockCandles, klines]);
 
   const candlestickData = useMemo(() => {
-    return chartSource.map((k, i) => ({
+    return candleSource.map((k, i) => ({
       x: i,
       y: [k.open, k.close, k.low, k.high] as [number, number, number, number],
       color: k.close >= k.open ? 'var(--price-up)' : 'var(--price-down)',
     }));
-  }, [chartSource]);
+  }, [candleSource]);
 
   const lineData = useMemo(() => {
-    return chartSource.map((k, i) => ({ x: i, y: k.close }));
-  }, [chartSource]);
+    return candleSource.map((k, i) => ({ x: i, y: k.close }));
+  }, [candleSource]);
+
+  const isIntraday = period === '1D';
   
   return (
     <div className="dashboard">
@@ -121,18 +143,14 @@ export default function Dashboard() {
           </div>
           
           <div className="chart-body">
-            <CandlestickChart data={candlestickData} lineData={lineData} />
-          </div>
-          
-          <div className="chart-x-axis">
-            <span>09:30</span>
-            <span>10:30</span>
-            <span>11:30</span>
-            <span>12:30</span>
-            <span>13:30</span>
-            <span>14:30</span>
-            <span>15:30</span>
-            <span>16:00</span>
+            <CandlestickChart
+              data={isIntraday ? [] : candlestickData}
+              lineData={isIntraday ? null : lineData}
+              intradayPoints={isIntraday ? intradayData : null}
+              currentPrice={currentQuote.price}
+              period={period}
+              currentTick={currentTick}
+            />
           </div>
         </div>
         
@@ -431,21 +449,45 @@ function generateMockCandles(count: number, basePrice: number, seedKey: string =
     return (seed & 0xfffffff) / 0xfffffff;
   };
   const candles = [];
-  let price = basePrice;
+  // Mean-reverting random walk so the mock series stays near basePrice
+  // and looks like a realistic A-share intraday trend instead of a random jump.
+  let price = basePrice * 0.985; // start slightly below so the trend looks bullish
+  const drift = (basePrice - price) / count;
   for (let i = 0; i < count; i++) {
     const open = price;
-    const change = (rand() - 0.45) * 1.5;
-    const close = price + change;
-    const high = Math.max(open, close) + rand() * 0.8;
-    const low = Math.min(open, close) - rand() * 0.8;
+    const noise = (rand() - 0.5) * basePrice * 0.012; // ~±1.2% of price
+    const reversion = (basePrice - price) * 0.06;     // gentle pull toward anchor
+    let close = open + noise + reversion + drift;
+    // Wick lengths proportional to body size but capped
+    const body = Math.abs(close - open);
+    const wick = body * (0.3 + rand() * 0.7) + basePrice * 0.002;
+    const high = Math.max(open, close) + wick;
+    const low = Math.min(open, close) - wick;
     candles.push({ timestamp: i, open, high, low, close, volume: rand() * 1000000 });
     price = close;
+  }
+  // Final close → basePrice so chart anchor matches live ticker
+  if (candles.length) {
+    const last = candles[candles.length - 1];
+    const delta = basePrice - last.close;
+    last.close = basePrice;
+    last.high = Math.max(last.high, basePrice);
+    last.low = Math.min(last.low, basePrice);
+    // Smooth the last few candles toward basePrice
+    for (let i = Math.max(0, candles.length - 3); i < candles.length - 1; i++) {
+      candles[i].close += delta * 0.25;
+    }
   }
   return candles;
 }
 
-/* ============== Candlestick Chart ============== */
-function CandlestickChart({ data, lineData }: { data: any[]; lineData: any[] }) {
+/* ============== Candlestick / Intraday Chart ============== */
+function CandlestickChart({
+  data, lineData, currentPrice, period, intradayPoints, currentTick,
+}: {
+  data: any[]; lineData: any[] | null; currentPrice: number; period: string;
+  intradayPoints: number[] | null; currentTick: number;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
 
@@ -459,86 +501,293 @@ function CandlestickChart({ data, lineData }: { data: any[]; lineData: any[] }) 
     return () => ro.disconnect();
   }, []);
 
-  const padding = { top: 12, right: 12, bottom: 12, left: 12 };
   const width = size.w;
   const height = size.h;
-  const innerW = Math.max(0, width - padding.left - padding.right);
-  const innerH = Math.max(0, height - padding.top - padding.bottom);
 
   if (width <= 0 || height <= 0) {
     return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />;
   }
 
-  const allValues = data.flatMap(d => [d.y[0], d.y[1], d.y[2], d.y[3]]);
-  const minVal = Math.min(...allValues);
-  const maxVal = Math.max(...allValues);
-  const range = maxVal - minVal || 1;
+  const padding = { top: 16, right: 60, bottom: 26, left: 8 };
+  const innerW = Math.max(0, width - padding.left - padding.right);
+  const innerH = Math.max(0, height - padding.top - padding.bottom);
 
-  const xScale = (i: number) => padding.left + (i / Math.max(data.length - 1, 1)) * innerW;
+  // ============== Intraday branch (固定窗口：240 个 tick = 一个完整 A 股交易日) ==============
+  if (intradayPoints && intradayPoints.length > 0) {
+    const WINDOW = 240; // A 股分时一交易日容量 (相当于 1 个完整交易日)
+    const allPoints = intradayPoints;
+
+    // 视角固定: 第一个点永远在 padding.left，最后一个点永远在 padding.left + innerW
+    // n < WINDOW: 只画前 n 个点（点密度稀疏，右侧留空）
+    // n >= WINDOW: 取最后 WINDOW 个点（老点被替换出窗口，但位置不变）
+    // 槽位宽 = innerW / (WINDOW - 1) — 固定
+    const points = allPoints.length >= WINDOW ? allPoints.slice(-WINDOW) : allPoints;
+    const n = points.length;
+
+    const xScale = (i: number) => padding.left + (i / (WINDOW - 1)) * innerW;
+
+    // Y 轴：用今天价格区间动态缩放
+    const open = points[0];
+    const minP = Math.min(...points);
+    const maxP = Math.max(...points);
+    const padP = (maxP - minP) * 0.15 || maxP * 0.005;
+    const minVal = minP - padP;
+    const maxVal = maxP + padP;
+    const range = maxVal - minVal || 1;
+    const yScale = (v: number) => padding.top + (1 - (v - minVal) / range) * innerH;
+
+    // 路径
+    const linePath = points.map((v, i) => `${i === 0 ? 'M' : 'L'} ${xScale(i)} ${yScale(v)}`).join(' ');
+    const lastDataX = xScale(n - 1);
+    const areaPath = `${linePath} L ${lastDataX} ${padding.top + innerH} L ${xScale(0)} ${padding.top + innerH} Z`;
+
+    const openY = yScale(open);
+    const lastP = points[n - 1];
+    const lineColor = lastP >= open ? 'var(--price-up)' : 'var(--price-down)';
+    const areaGradId = lastP >= open ? 'intra-area-up' : 'intra-area-down';
+
+    const gridLevels = [0.1, 0.3, 0.5, 0.7, 0.9].map(t => ({
+      y: padding.top + t * innerH,
+      price: maxVal - t * range,
+    }));
+
+    // 当前 tick 游标 (类似分时右上角的"现在"竖线)
+    const cursorX = lastDataX;
+
+    // X 轴时间标签：按 n 的比例分布（时间跟着"线在走"的进度走）
+    const timeLabels = [
+      { ratio: 0, label: '09:30' },
+      { ratio: 0.25, label: '11:30' },
+      { ratio: 0.5, label: '13:00' },
+      { ratio: 0.75, label: '14:00' },
+      { ratio: 1, label: '15:00' },
+    ];
+
+    return (
+      <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'relative' }}>
+        <svg viewBox={`0 0 ${width} ${height}`} className="candlestick-svg" width={width} height={height} style={{ display: 'block' }}>
+          <defs>
+            <linearGradient id={areaGradId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={lastP >= open ? 'rgba(220, 38, 38, 0.18)' : 'rgba(22, 163, 74, 0.18)'} />
+              <stop offset="100%" stopColor={lastP >= open ? 'rgba(220, 38, 38, 0)' : 'rgba(22, 163, 74, 0)'} />
+            </linearGradient>
+          </defs>
+
+          {/* 中线 (50% 价位) 略强 */}
+          {gridLevels.map((g, i) => (
+            <line key={`g-${i}`} x1={padding.left} x2={width - padding.right} y1={g.y} y2={g.y}
+              stroke={i === 2 ? 'rgba(255, 255, 255, 0.10)' : 'rgba(255, 255, 255, 0.05)'}
+              strokeWidth={i === 2 ? 1 : 1}
+              strokeDasharray={i === 2 ? '0' : '0'} />
+          ))}
+
+          {/* 开盘价虚线 (跨整个窗口) */}
+          <line
+            x1={padding.left} x2={width - padding.right}
+            y1={openY} y2={openY}
+            stroke="rgba(255, 255, 255, 0.4)"
+            strokeWidth={0.8}
+            strokeDasharray="4 4"
+          />
+          <text
+            x={width - padding.right + 4}
+            y={openY + 4}
+            fill="rgba(255, 255, 255, 0.6)"
+            fontSize={10}
+            fontFamily="ui-monospace, monospace"
+            textAnchor="start"
+          >
+            开盘 {open.toFixed(2)}
+          </text>
+
+          {/* 折线 + 区域 */}
+          <path d={areaPath} fill={`url(#${areaGradId})`} />
+          <path d={linePath} stroke={lineColor} strokeWidth={1.5} fill="none"
+            strokeLinejoin="round" strokeLinecap="round" />
+
+          {/* 当前游标 (竖线) */}
+          <line
+            x1={cursorX} x2={cursorX}
+            y1={padding.top} y2={padding.top + innerH}
+            stroke="rgba(255, 255, 255, 0.18)"
+            strokeWidth={1}
+            strokeDasharray="2 3"
+          />
+
+          {/* 当前价 crosshair */}
+          {(() => {
+            const y = yScale(currentPrice);
+            if (y < padding.top || y > padding.top + innerH) return null;
+            return (
+              <g>
+                <line x1={padding.left} x2={width - padding.right} y1={y} y2={y}
+                  stroke={lineColor} strokeWidth={0.8} strokeDasharray="3 3" opacity={0.6} />
+                <rect x={width - padding.right} y={y - 9} width={padding.right - 4} height={18}
+                  fill={lineColor} rx={2} />
+                <text x={width - padding.right / 2} y={y + 4}
+                  fill="#fff" fontSize={11} fontWeight={600}
+                  fontFamily="ui-monospace, monospace" textAnchor="middle">
+                  {currentPrice.toFixed(2)}
+                </text>
+              </g>
+            );
+          })()}
+
+          {/* Y 轴价格刻度 */}
+          {gridLevels.map((g, i) => (
+            <text key={`yl-${i}`} x={width - padding.right + 4} y={g.y + 4}
+              fill="rgba(255, 255, 255, 0.45)" fontSize={10}
+              fontFamily="ui-monospace, monospace" textAnchor="start">
+              {g.price.toFixed(2)}
+            </text>
+          ))}
+
+          {/* X 轴时间刻度 (随 n 比例分布：09:30 永远在最左，15:00 永远在最右) */}
+          {timeLabels.map((lbl, i) => {
+            const x = padding.left + lbl.ratio * innerW;
+            return (
+              <text key={`xl-${i}`} x={x} y={height - 8}
+                fill="rgba(255, 255, 255, 0.4)" fontSize={10}
+                fontFamily="ui-monospace, monospace" textAnchor="middle">
+                {lbl.label}
+              </text>
+            );
+          })}
+        </svg>
+      </div>
+    );
+  }
+
+  // ============== Candle branch (1W+) ==============
+  const allValues = data.flatMap(d => [d.y[0], d.y[1], d.y[2], d.y[3]]);
+  let minVal = Math.min(...allValues, currentPrice);
+  let maxVal = Math.max(...allValues, currentPrice);
+  const span = maxVal - minVal || 1;
+  minVal -= span * 0.05;
+  maxVal += span * 0.05;
+  const range = maxVal - minVal;
+
+  const xScale = (i: number) => padding.left + (data.length === 1 ? innerW / 2 : (i / (data.length - 1)) * innerW);
   const yScale = (v: number) => padding.top + (1 - (v - minVal) / range) * innerH;
 
-  const linePath = lineData.map((d, i) => {
-    const x = xScale(d.x);
-    const y = yScale(d.y);
-    return `${i === 0 ? 'M' : 'L'} ${x} ${y}`;
-  }).join(' ');
+  const slotW = innerW / Math.max(data.length, 1);
+  const candleW = Math.max(2, Math.min(slotW * 0.72, 16));
 
-  const areaPath = `${linePath} L ${xScale(lineData.length - 1)} ${height - padding.bottom} L ${xScale(0)} ${height - padding.bottom} Z`;
+  const gridLevels = [0.1, 0.3, 0.5, 0.7, 0.9].map(t => ({
+    y: padding.top + t * innerH,
+    price: maxVal - t * range,
+  }));
 
-  const candleW = Math.max(2, Math.min(14, innerW / Math.max(data.length, 1) * 0.7));
+  const currentY = yScale(currentPrice);
+  const currentUp = currentPrice >= (data[0]?.y?.[0] ?? currentPrice);
+  const currentColor = currentUp ? 'var(--price-up)' : 'var(--price-down)';
 
   return (
-    <div ref={containerRef} style={{ width: '100%', height: '100%' }}>
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        preserveAspectRatio="none"
-        className="candlestick-svg"
-        width={width}
-        height={height}
-      >
+    <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'relative' }}>
+      <svg viewBox={`0 0 ${width} ${height}`} className="candlestick-svg" width={width} height={height} style={{ display: 'block' }}>
         <defs>
-          <linearGradient id="area-gradient" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="rgba(255, 255, 255, 0.15)" />
-            <stop offset="100%" stopColor="rgba(255, 255, 255, 0)" />
+          <linearGradient id="chart-area-grad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="rgba(96, 165, 250, 0.18)" />
+            <stop offset="100%" stopColor="rgba(96, 165, 250, 0)" />
           </linearGradient>
         </defs>
-        <path d={areaPath} fill="url(#area-gradient)" />
-        <path
-          d={linePath}
-          stroke="var(--text-primary)"
-          strokeWidth={1.5}
-          fill="none"
-        />
+
+        {gridLevels.map((g, i) => (
+          <line key={`grid-${i}`} x1={padding.left} x2={width - padding.right} y1={g.y} y2={g.y}
+            stroke="rgba(255, 255, 255, 0.06)" strokeWidth={1} />
+        ))}
+
+        {lineData && lineData.length > 1 && (() => {
+          const path = lineData.map((d, i) => `${i === 0 ? 'M' : 'L'} ${xScale(d.x)} ${yScale(d.y)}`).join(' ');
+          const area = `${path} L ${xScale(lineData.length - 1)} ${padding.top + innerH} L ${xScale(0)} ${padding.top + innerH} Z`;
+          return (
+            <g>
+              <path d={area} fill="url(#chart-area-grad)" />
+              <path d={path} stroke="rgba(96, 165, 250, 0.55)" strokeWidth={1.25} fill="none"
+                strokeLinejoin="round" strokeLinecap="round" />
+            </g>
+          );
+        })()}
+
         {data.map((d, i) => {
           const x = xScale(d.x);
           const isUp = d.y[1] >= d.y[0];
+          const color = isUp ? 'var(--price-up)' : 'var(--price-down)';
           const bodyTop = yScale(Math.max(d.y[0], d.y[1]));
           const bodyBottom = yScale(Math.min(d.y[0], d.y[1]));
           const wickTop = yScale(d.y[3]);
           const wickBottom = yScale(d.y[2]);
+          const bodyH = Math.max(1, bodyBottom - bodyTop);
           return (
             <g key={i}>
-              <line
-                x1={x}
-                y1={wickTop}
-                x2={x}
-                y2={wickBottom}
-                stroke={isUp ? 'var(--price-up)' : 'var(--price-down)'}
-                strokeWidth={1}
-              />
-              <rect
-                x={x - candleW / 2}
-                y={bodyTop}
-                width={candleW}
-                height={Math.max(1, bodyBottom - bodyTop)}
-                fill={isUp ? 'var(--price-up)' : 'var(--price-down)'}
-              />
+              <line x1={x} y1={wickTop} x2={x} y2={wickBottom} stroke={color} strokeWidth={1} opacity={0.9} />
+              <rect x={x - candleW / 2} y={bodyTop} width={candleW} height={bodyH}
+                fill={color} fillOpacity={isUp ? 0.95 : 1} stroke={color} strokeWidth={0.5} rx={0.5} />
             </g>
           );
         })}
+
+        {currentPrice > 0 && currentY >= padding.top && currentY <= padding.top + innerH && (
+          <g>
+            <line x1={padding.left} x2={width - padding.right} y1={currentY} y2={currentY}
+              stroke={currentColor} strokeWidth={0.8} strokeDasharray="3 3" opacity={0.7} />
+            <rect x={width - padding.right} y={currentY - 9} width={padding.right - 4} height={18}
+              fill={currentColor} rx={2} />
+            <text x={width - padding.right / 2} y={currentY + 4}
+              fill="#fff" fontSize={11} fontWeight={600}
+              fontFamily="ui-monospace, monospace" textAnchor="middle">
+              {currentPrice.toFixed(2)}
+            </text>
+          </g>
+        )}
+
+        {gridLevels.map((g, i) => (
+          <text key={`yl-${i}`} x={width - padding.right + 4} y={g.y + 4}
+            fill="rgba(255, 255, 255, 0.45)" fontSize={10}
+            fontFamily="ui-monospace, monospace" textAnchor="start">
+            {g.price.toFixed(2)}
+          </text>
+        ))}
+
+        {(() => {
+          const labels = xAxisLabels(period, data.length);
+          return labels.map((lbl, i) => {
+            const xRatio = lbl.idx / Math.max(data.length - 1, 1);
+            const x = padding.left + xRatio * innerW;
+            return (
+              <text key={`xl-${i}`} x={x} y={height - 8}
+                fill="rgba(255, 255, 255, 0.4)" fontSize={10}
+                fontFamily="ui-monospace, monospace" textAnchor="middle">
+                {lbl.label}
+              </text>
+            );
+          });
+        })()}
       </svg>
     </div>
   );
+}
+
+function xAxisLabels(period: string, count: number) {
+  const labels: { idx: number; label: string }[] = [];
+  if (period === '1D') {
+    const times = ['09:30', '10:30', '11:30', '13:00', '14:00', '15:00', '15:30'];
+    times.forEach((t, i) => labels.push({ idx: Math.floor((i / (times.length - 1)) * Math.max(count - 1, 0)), label: t }));
+  } else if (period === '1W') {
+    const days = ['一', '二', '三', '四', '五'];
+    days.forEach((d, i) => labels.push({ idx: Math.floor((i / (days.length - 1)) * Math.max(count - 1, 0)), label: `周${d}` }));
+  } else if (period === '1M') {
+    for (let i = 0; i < 5; i++) labels.push({ idx: Math.floor((i / 4) * Math.max(count - 1, 0)), label: `${i * 7 + 1}日` });
+  } else if (period === '3M') {
+    const months = ['10月', '11月', '12月', '1月'];
+    months.forEach((m, i) => labels.push({ idx: Math.floor((i / (months.length - 1)) * Math.max(count - 1, 0)), label: m }));
+  } else if (period === '1Y') {
+    const months = ['1月', '3月', '5月', '7月', '9月', '11月'];
+    months.forEach((m, i) => labels.push({ idx: Math.floor((i / (months.length - 1)) * Math.max(count - 1, 0)), label: m }));
+  } else {
+    ['Q1', 'Q2', 'Q3', 'Q4'].forEach((q, i) => labels.push({ idx: Math.floor((i / 3) * Math.max(count - 1, 0)), label: q }));
+  }
+  return labels;
 }
 
 /* ============== Donut Chart ============== */

@@ -176,6 +176,21 @@ interface SimulationState {
   opponentAssets: number;
   finalAssets?: number;
   returnRate?: number;
+  // Pacing: which session are we in?
+  session: 'morning' | 'lunch' | 'afternoon' | 'closed';
+  // Daily close settlement modal
+  dailySettlement: {
+    day: number;
+    open: number;
+    close: number;
+    pnl: number;
+    pnlPercent: number;
+    trades: number;
+    isFinal: boolean;
+  } | null;
+  // Daily running P&L for the settlement modal
+  dayOpenAssets: number;
+  dayOpenPrice: number;
 }
 
 interface GameState {
@@ -293,6 +308,10 @@ interface GameState {
   // Tick engine
   startSimulation: () => void;
   stopSimulation: () => void;
+  endLunchBreak: () => void;
+  resumeAfternoon: () => void;
+  endTradingDay: () => void;
+  resumeNextDay: () => void;
   processTick: () => void;
   aggregateKline: () => void;
   pushRandomNews: () => void;
@@ -563,6 +582,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     settlementComputed: false,
     initialAssets: 82292000,
     opponentAssets: 82292000,
+    session: 'morning',
+    dailySettlement: null,
+    dayOpenAssets: 82292000,
+    dayOpenPrice: 94.85,
   },
 
   toast: null,
@@ -1081,6 +1104,140 @@ export const useGameStore = create<GameState>((set, get) => ({
     }, 3500);
   },
 
+  endLunchBreak: () => {
+    const state = get();
+    if (state.gameStatus !== 'playing') return;
+    get().stopSimulation();
+
+    // Mid-day stats (morning session P&L)
+    const positions = state.holdings.reduce((s, h) => s + h.marketPrice * h.shares, 0);
+    const totalAssets = state.cash + positions;
+    const dayPnl = totalAssets - state.simulation.dayOpenAssets;
+    const dayPnlPct = (dayPnl / state.simulation.dayOpenAssets) * 100;
+    const lastPrice = state.currentQuote.price;
+    const morningPnl = lastPrice - state.simulation.dayOpenPrice;
+    const morningPnlPct = (morningPnl / state.simulation.dayOpenPrice) * 100;
+
+    // Show lunch break modal — keep gameStatus='playing' so the modal is purely informational
+    set({
+      gameStatus: 'idle',
+      currentTick: 0,
+      simulation: {
+        ...state.simulation,
+        session: 'lunch',
+        dailySettlement: {
+          day: state.currentDay,
+          open: state.simulation.dayOpenPrice,
+          close: lastPrice,
+          pnl: dayPnl,
+          pnlPercent: dayPnlPct,
+          trades: state.totalTradeCount,
+          isFinal: false,
+        },
+        // Persist a fresh "open" baseline for the afternoon session
+        dayOpenPrice: lastPrice,
+        dayOpenAssets: totalAssets,
+      },
+    });
+
+    get().showToast('11:30 中午收盘｜13:00 下午开盘', 'info');
+  },
+
+  resumeAfternoon: () => {
+    const state = get();
+    if (state.gameStatus !== 'idle' || state.simulation.session !== 'lunch') return;
+    set({
+      gameStatus: 'playing',
+      simulation: { ...state.simulation, session: 'afternoon', dailySettlement: null },
+    });
+  },
+
+  endTradingDay: () => {
+    const state = get();
+    if (state.gameStatus !== 'playing') return;
+    get().stopSimulation();
+
+    const closedDay = state.currentDay;
+    const isFinalDay = closedDay >= state.maxDays;
+
+    // Compute daily settlement stats (afternoon + morning combined)
+    const positions = state.holdings.reduce((s, h) => s + h.marketPrice * h.shares, 0);
+    const totalAssets = state.cash + positions;
+    const dayPnl = totalAssets - state.simulation.dayOpenAssets;
+    const dayPnlPct = (dayPnl / state.simulation.dayOpenAssets) * 100;
+    const lastPrice = state.currentQuote.price;
+    const todayOpen = state.simulation.dayOpenPrice;
+
+    if (isFinalDay) {
+      // Final day → full game settlement
+      get().showToast(`第 ${closedDay} 日 15:00 收盘｜全部交易日结束`, 'success');
+      get().endMatch();
+      set({ gameStatus: 'settlement' });
+      return;
+    }
+
+    set({
+      gameStatus: 'idle',
+      currentTick: 0,
+      simulation: {
+        ...state.simulation,
+        session: 'closed',
+        dailySettlement: {
+          day: closedDay,
+          open: todayOpen,
+          close: lastPrice,
+          pnl: dayPnl,
+          pnlPercent: dayPnlPct,
+          trades: state.totalTradeCount,
+          isFinal: false,
+        },
+      },
+    });
+  },
+
+  resumeNextDay: () => {
+    const state = get();
+    if (state.gameStatus !== 'idle' || state.simulation.session !== 'closed') return;
+    const lastPrice = state.currentQuote.price;
+
+    set({
+      gameStatus: 'playing',
+      currentDay: state.currentDay + 1,
+      currentTick: 0,
+      currentQuote: {
+        ...state.currentQuote,
+        prevClose: lastPrice,
+        open: lastPrice,
+        high: lastPrice,
+        low: lastPrice,
+        change: 0,
+        changePercent: 0,
+        timestamp: Date.now(),
+      },
+      timelineData: [],
+      klines: [],
+      orderBook: {
+        bids: Array.from({ length: 5 }, (_, i) => ({
+          price: Math.round((lastPrice - 0.01 * (i + 1)) * 100) / 100,
+          quantity: 50 + Math.floor(Math.random() * 450),
+          orders: 5 + Math.floor(Math.random() * 20),
+        })),
+        asks: Array.from({ length: 5 }, (_, i) => ({
+          price: Math.round((lastPrice + 0.01 * (i + 1)) * 100) / 100,
+          quantity: 50 + Math.floor(Math.random() * 450),
+          orders: 5 + Math.floor(Math.random() * 20),
+        })),
+      },
+      simulation: {
+        ...state.simulation,
+        session: 'morning',
+        dailySettlement: null,
+        dayOpenPrice: lastPrice,
+        dayOpenAssets: state.cash + state.holdings.reduce((s, h) => s + h.marketPrice * h.shares, 0),
+      },
+    });
+  },
+
   startSimulation: () => {
     const state = get();
     if (state.simulation.timer) return; // already running
@@ -1162,6 +1319,10 @@ export const useGameStore = create<GameState>((set, get) => ({
         settlementComputed: s.settlementComputed,
         initialAssets: s.initialAssets,
         opponentAssets: s.opponentAssets,
+        session: s.session,
+        dailySettlement: s.dailySettlement,
+        dayOpenAssets: s.dayOpenAssets,
+        dayOpenPrice: s.dayOpenPrice,
       },
     });
   },
@@ -1194,6 +1355,18 @@ export const useGameStore = create<GameState>((set, get) => ({
       timelineData: [...state.timelineData, newPrice].slice(-500),
       currentTick: state.currentTick + 1,
     });
+
+    // Daily pacing: 4 trading segments separated by 11:30 lunch break and 15:00 close
+    // 09:30-10:30 (60)  10:30-11:30 (60)  lunch  13:00-14:00 (60)  14:00-15:00 (60)
+    const TICKS_PER_HALF = 120;       // 09:30-11:30 or 13:00-15:00 = 120 ticks each
+    const nextTick = state.currentTick + 1;
+    if (nextTick === TICKS_PER_HALF) {
+      // 11:30 lunch break
+      get().endLunchBreak();
+    } else if (nextTick >= TICKS_PER_HALF * 2) {
+      // 15:00 close
+      get().endTradingDay();
+    }
 
     // Update holdings market price & pnl based on selected symbol
     set((s) => {

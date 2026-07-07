@@ -6,6 +6,7 @@ import GameInfoSidebar from './components/GameInfoSidebar';
 import StatusBar from './components/StatusBar';
 import MatchOverlay from './components/MatchOverlay';
 import SettlementModal from './components/SettlementModal';
+import DailySettlementModal from './components/DailySettlementModal';
 import Dashboard from './pages/Dashboard';
 import TradePanel from './pages/TradePanel';
 import DealerPanelPage from './pages/DealerPanel';
@@ -196,6 +197,9 @@ function App() {
 
       {/* Match Flow Overlay (matching -> reversed) */}
       <MatchOverlay />
+
+      {/* Daily Settlement Modal (lunch / day close) */}
+      <DailySettlementModal />
 
       {/* Settlement Modal */}
       <SettlementModal
