@@ -1,5 +1,6 @@
 import { useGameStore } from '../store/gameStore';
-import { Quote, KLine, OrderBook, TechnicalIndicators, News, InsiderInfo, QuantFlowData } from '../types';
+import type { NewsItem } from '../store/gameStore';
+import { Quote, KLine, OrderBook, TechnicalIndicators, InsiderInfo, QuantFlowData } from '../types';
 
 const symbols = [
   { symbol: 'SZ000001', name: '平安银行' },
@@ -35,20 +36,20 @@ export function generateMockData() {
   
   // Generate initial K-lines
   const klines = generateKLines(100);
-  store.updateKLines(klines);
-  
+  store.setKlines(klines);
+
   // Generate order book
   const orderBook = generateOrderBook(basePrice);
-  store.updateOrderBook(orderBook);
-  
+  store.setOrderBook(orderBook);
+
   // Generate indicators
   const indicators = generateIndicators(basePrice);
-  store.updateIndicators(indicators);
-  
+  store.setIndicators(indicators);
+
   // Generate initial news
   const news = generateNews();
   news.forEach(n => store.addNews(n));
-  
+
   // Generate dealer info if role is dealer
   if (store.role === 'dealer') {
     store.setDealerInfo(generateDealerInfo());
@@ -143,33 +144,36 @@ export function generateIndicators(price: number): TechnicalIndicators {
   };
 }
 
-export function generateNews(): News[] {
+export function generateNews(): NewsItem[] {
   const newsTemplates = [
-    { type: 'bullish' as const, title: '公司Q4营收超预期', impact: 0.02 },
-    { type: 'bearish' as const, title: '行业政策出现重大变化', impact: -0.02 },
-    { type: 'neutral' as const, title: '公司发布日常公告', impact: 0 },
-    { type: 'bullish' as const, title: '获得大额订单', impact: 0.015 },
-    { type: 'bearish' as const, title: '高管减持股份', impact: -0.015 },
-    { type: 'neutral' as const, title: '正常交易提示', impact: 0 },
-    { type: 'bullish' as const, title: '新产品发布', impact: 0.01 },
-    { type: 'bearish' as const, title: '业绩下调', impact: -0.025 },
+    { sentiment: 'bullish' as const, title: '公司Q4营收超预期', impact: 0.02, type: 'verified' as const, tag: 'EARNINGS' },
+    { sentiment: 'bearish' as const, title: '行业政策出现重大变化', impact: -0.02, type: 'warning' as const, tag: 'POLICY' },
+    { sentiment: 'neutral' as const, title: '公司发布日常公告', impact: 0, type: 'verified' as const, tag: 'ANNOUNCEMENT' },
+    { sentiment: 'bullish' as const, title: '获得大额订单', impact: 0.015, type: 'verified' as const, tag: 'ORDER' },
+    { sentiment: 'bearish' as const, title: '高管减持股份', impact: -0.015, type: 'unverified' as const, tag: 'RUMOR' },
+    { sentiment: 'neutral' as const, title: '正常交易提示', impact: 0, type: 'verified' as const, tag: 'TRADING' },
+    { sentiment: 'bullish' as const, title: '新产品发布', impact: 0.01, type: 'verified' as const, tag: 'PRODUCT' },
+    { sentiment: 'bearish' as const, title: '业绩下调', impact: -0.025, type: 'warning' as const, tag: 'EARNINGS' },
   ];
-  
-  const news: News[] = [];
+
+  const news: NewsItem[] = [];
   const now = Date.now();
-  
+
   for (let i = 0; i < 8; i++) {
     const template = newsTemplates[Math.floor(Math.random() * newsTemplates.length)];
     news.push({
       id: `news_${i}`,
       type: template.type,
       title: template.title,
-      content: `${currentSymbol.name}${template.title}，市场反应${template.impact > 0 ? '积极' : template.impact < 0 ? '消极' : '平淡'}`,
-      impact: template.impact,
+      source: 'Mock News Wire',
+      tick: Math.max(0, 100 - i),
+      time: `${i * 5}m ago`,
       timestamp: now - i * 300000,
+      content: `${currentSymbol.name}${template.title}，市场反应${template.impact > 0 ? '积极' : template.impact < 0 ? '消极' : '平淡'}`,
+      tags: [template.tag],
     });
   }
-  
+
   return news;
 }
 
@@ -253,12 +257,12 @@ export function simulateTick() {
   
   // Update order book
   const orderBook = generateOrderBook(newPrice);
-  store.updateOrderBook(orderBook);
-  
+  store.setOrderBook(orderBook);
+
   // Update indicators
   const indicators = generateIndicators(newPrice);
-  store.updateIndicators(indicators);
-  
+  store.setIndicators(indicators);
+
   // Add new K-line occasionally
   const { klines } = store;
   if (klines.length > 0) {
@@ -272,25 +276,28 @@ export function simulateTick() {
         close: newPrice,
         volume: Math.floor(Math.random() * 5000000),
       }];
-      store.updateKLines(newKlines);
+      store.setKlines(newKlines);
     }
   }
-  
+
   // Random news
   if (Math.random() < 0.05) {
     const templates = [
-      { type: 'bullish' as const, title: '利好消息刺激股价上涨', impact: 0.005 },
-      { type: 'bearish' as const, title: '利空消息导致股价下跌', impact: -0.005 },
-      { type: 'neutral' as const, title: '市场维持震荡格局', impact: 0 },
+      { sentiment: 'bullish' as const, type: 'verified' as const, title: '利好消息刺激股价上涨', impact: 0.005, tag: 'POSITIVE' },
+      { sentiment: 'bearish' as const, type: 'warning' as const, title: '利空消息导致股价下跌', impact: -0.005, tag: 'NEGATIVE' },
+      { sentiment: 'neutral' as const, type: 'unverified' as const, title: '市场维持震荡格局', impact: 0, tag: 'NEUTRAL' },
     ];
     const template = templates[Math.floor(Math.random() * templates.length)];
     store.addNews({
       id: `news_${Date.now()}`,
       type: template.type,
       title: template.title,
+      source: 'Mock News Wire',
+      tick: store.currentTick,
+      time: 'just now',
       content: `${currentSymbol.name}${template.title}`,
-      impact: template.impact,
       timestamp: Date.now(),
+      tags: [template.tag],
     });
   }
 }

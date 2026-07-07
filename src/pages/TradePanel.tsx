@@ -3,12 +3,15 @@ import { useGameStore } from '../store/gameStore';
 import './TradePanel.css';
 
 export default function TradePanel() {
-  const { currentQuote, orderBook, holdings, indicators, cash: playerCash, leverage, setLeverage, placeOrder, addNews } = useGameStore();
-  const [side, setSide] = useState<'buy' | 'sell'>('buy');
+  const { currentQuote, orderBook, holdings, indicators, cash: playerCash, leverage, setLeverage, placeOrder, purchaseInsiderInfo, gameStatus, unrealizedPnl } = useGameStore();
+  const positionCost = holdings.reduce((s, h) => s + h.avgPrice * h.shares, 0);
+  const unrealizedPct = positionCost > 0 ? (unrealizedPnl / positionCost) * 100 : 0;
+  const [side] = useState<'buy' | 'sell'>('buy');
   const [orderType, setOrderType] = useState('market');
   const [quantity, setQuantity] = useState(500);
-  const [price, setPrice] = useState(currentQuote.price);
+  const [price] = useState(currentQuote.price);
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; msg: string } | null>(null);
+  const [insiderFeedback, setInsiderFeedback] = useState<{ kind: 'success' | 'error'; msg: string } | null>(null);
 
   // Chart data
   const candleData = generateCandles(60, currentQuote.price);
@@ -138,7 +141,9 @@ export default function TradePanel() {
             </div>
             <div>
               <div className="balance-label">Unrealized P&L</div>
-              <div className="balance-value up mono">+$2,130 (2.65%)</div>
+              <div className={`balance-value mono ${unrealizedPnl >= 0 ? 'up' : 'down'}`}>
+                {unrealizedPnl >= 0 ? '+' : ''}${Math.round(unrealizedPnl).toLocaleString()} ({unrealizedPct >= 0 ? '+' : ''}{unrealizedPct.toFixed(2)}%)
+              </div>
             </div>
           </div>
 
@@ -217,6 +222,57 @@ export default function TradePanel() {
               <span className="insider-cost mono">$2,000</span>
             </div>
             <p className="insider-text">Purchase insider information with potential risks.</p>
+            {insiderFeedback && (
+              <div
+                className={`order-feedback ${insiderFeedback.kind}`}
+                style={{
+                  marginTop: 8,
+                  marginBottom: 8,
+                  fontSize: 12,
+                  padding: '6px 10px',
+                  borderRadius: 6,
+                  background: insiderFeedback.kind === 'success' ? 'rgba(34,197,94,0.12)' : 'rgba(220,38,38,0.12)',
+                  color: insiderFeedback.kind === 'success' ? '#22c55e' : '#ef4444',
+                  border: `1px solid ${insiderFeedback.kind === 'success' ? 'rgba(34,197,94,0.3)' : 'rgba(220,38,38,0.3)'}`,
+                }}
+              >
+                {insiderFeedback.msg}
+              </div>
+            )}
+            <button
+              type="button"
+              className="order-btn insider-btn"
+              disabled={playerCash < 2000 || gameStatus !== 'playing'}
+              onClick={() => {
+                const r = purchaseInsiderInfo('manual', 2000);
+                if (r.success) {
+                  setInsiderFeedback({
+                    kind: r.trustworthy ? 'success' : 'error',
+                    msg: `${r.trustworthy ? '✅ 真消息' : '⚠️ 假消息'}: ${r.tip}`,
+                  });
+                } else {
+                  setInsiderFeedback({ kind: 'error', msg: r.error || '购买失败' });
+                }
+                setTimeout(() => setInsiderFeedback(null), 4000);
+              }}
+              style={{
+                width: '100%',
+                padding: '10px 12px',
+                background: playerCash < 2000 || gameStatus !== 'playing' ? 'var(--bg-tertiary)' : 'var(--bg-elevated)',
+                color: playerCash < 2000 || gameStatus !== 'playing' ? 'var(--text-tertiary)' : 'var(--text-primary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: 6,
+                fontSize: 13,
+                fontWeight: 600,
+                marginTop: 8,
+              }}
+            >
+              {gameStatus !== 'playing'
+                ? '非交易时段'
+                : playerCash < 2000
+                  ? '余额不足'
+                  : 'Purchase Insider Info ($2,000)'}
+            </button>
           </div>
         </div>
       </div>

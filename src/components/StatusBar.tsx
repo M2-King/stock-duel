@@ -1,17 +1,17 @@
 import { useGameStore } from '../store/gameStore';
 import { useEffect, useState } from 'react';
+import { clockFromTickSeconds } from '../utils/clock';
 import './StatusBar.css';
 
 export default function StatusBar() {
-  const { roundTime } = useGameStore();
+  const { currentTick, simulation, gameStatus } = useGameStore();
   const [latency] = useState(32);
   const [server] = useState('US East');
   const [connection] = useState('Good');
-  
-  const h = String(Math.floor(roundTime / 3600)).padStart(2, '0');
-  const m = String(Math.floor((roundTime % 3600) / 60)).padStart(2, '0');
-  const s = String(roundTime % 60).padStart(2, '0');
-  
+
+  // Single clock: same source of truth as Header.
+  const tickClock = clockFromTickSeconds(simulation.session, currentTick);
+
   return (
     <footer className="status-bar">
       <div className="status-left">
@@ -28,8 +28,8 @@ export default function StatusBar() {
           <span className="status-value mono">{latency}ms</span>
         </div>
         <div className="status-item">
-          <span className="status-label">⏰ Round Time</span>
-          <span className="status-value mono">{h}:{m}:{s}</span>
+          <span className="status-label">⏰ Clock</span>
+          <span className="status-value mono">{gameStatus === 'playing' ? tickClock : '--:--:--'}</span>
         </div>
       </div>
       

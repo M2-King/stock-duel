@@ -4,6 +4,7 @@ import './SettlementModal.css';
 interface SettlementModalProps {
   open: boolean;
   onClose: () => void;
+  onPlayAgain?: () => void;
 }
 
 const roleLabel: Record<Role, string> = {
@@ -18,8 +19,8 @@ const roleIcon: Record<Role, string> = {
   regulator: '⚖️',
 };
 
-export default function SettlementModal({ open, onClose }: SettlementModalProps) {
-  const { userName, role, players, simulation, holdings, cash, currentQuote, totalTradeCount, bestTradePnl } = useGameStore();
+export default function SettlementModal({ open, onClose, onPlayAgain }: SettlementModalProps) {
+  const { role, players, simulation, holdings, cash, currentQuote, totalTradeCount, bestTradePnl } = useGameStore();
 
   if (!open) return null;
 
@@ -27,12 +28,11 @@ export default function SettlementModal({ open, onClose }: SettlementModalProps)
 
   // Use computed simulation results if available
   const finalAssets = (simulation as any).finalAssets ?? myAssets;
-  const initialAssets = simulation.initialAssets || 82292000;
+  const initialAssets = simulation.initialAssets || 100000000;
   const opponentAssets = simulation.opponentAssets || initialAssets;
   const returnRate = ((finalAssets - initialAssets) / initialAssets) * 100;
 
   // Update players for display with computed final values
-  const myPlayerBase = players.find(p => p.role === role);
   const sortedPlayers = [...players].map(p => p.role === role ? { ...p, totalAssets: Math.round(finalAssets) } : p.role === 'retail' && role !== 'retail' ? { ...p, totalAssets: opponentAssets } : p)
     .sort((a, b) => b.totalAssets - a.totalAssets);
   const winner = sortedPlayers[0];
@@ -78,9 +78,9 @@ export default function SettlementModal({ open, onClose }: SettlementModalProps)
                   ¥{(p.totalAssets / 10000).toFixed(0)}万
                 </div>
                 <div className="standing-pnl">
-                  <span className={p.totalAssets >= 100000000 ? 'up' : 'down'}>
-                    {p.totalAssets >= 100000000 ? '+' : ''}
-                    {((p.totalAssets - 100000000) / 10000).toFixed(0)}万
+                  <span className={p.totalAssets >= initialAssets ? 'up' : 'down'}>
+                    {p.totalAssets >= initialAssets ? '+' : ''}
+                    {((p.totalAssets - initialAssets) / 10000).toFixed(0)}万
                   </span>
                 </div>
               </div>
@@ -120,8 +120,13 @@ export default function SettlementModal({ open, onClose }: SettlementModalProps)
             返回大厅
           </button>
           <button className="settlement-btn primary" onClick={() => {
-            useGameStore.getState().startMatch();
-            onClose();
+            if (onPlayAgain) {
+              onPlayAgain();
+            } else {
+              useGameStore.getState().restartMatch();
+              useGameStore.getState().startMatch();
+              onClose();
+            }
           }}>
             再来一局
           </button>

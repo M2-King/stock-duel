@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
+// 单一时钟：Header 只读 tick 引擎派生出的时间（clockFromTick），
+// 不再维护独立的实时/roundTime 推进逻辑。
 import { useGameStore, GameStatus, Role } from '../store/gameStore';
+import { clockFromTick, sessionLabel } from '../utils/clock';
 import './Header.css';
 
 const statusMap: Record<GameStatus, { label: string; color: string; live?: boolean }> = {
@@ -16,34 +19,16 @@ const roleMeta: Record<Role, { label: string; icon: string; color: string; desc:
   regulator: { label: 'SEC Agent', icon: '⚖️', color: '#fb923c', desc: 'Oversee market integrity and enforce rules.' },
 };
 
+// Map currentTick (0..60 per half-session) to real A-share clock
+// (clockFromTick is imported from ../utils/clock — single source of truth)
+
 export default function Header() {
-  const { role, userName, gameStatus, roundTime, portfolioTotal, startMatch, setRole, currentDay, maxDays } = useGameStore();
-  const [now, setNow] = useState(new Date());
+  const {
+    role, userName, gameStatus, portfolioTotal, startMatch, setRole,
+    currentDay, maxDays, currentTick, simulation,
+  } = useGameStore();
   const [popoverOpen, setPopoverOpen] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(t);
-  }, []);
-
-  useEffect(() => {
-    if (gameStatus === 'playing') {
-      const t = setInterval(() => {
-        useGameStore.setState((s) => {
-          const next = s.roundTime - 1;
-          if (next <= 0) {
-            return {
-              roundTime: 12 * 3600 + 20 * 60 + 23,
-              currentDay: Math.min(s.currentDay + 1, s.maxDays),
-            };
-          }
-          return { roundTime: next };
-        });
-      }, 1000);
-      return () => clearInterval(t);
-    }
-  }, [gameStatus]);
 
   useEffect(() => {
     if (!popoverOpen) return;
@@ -56,9 +41,9 @@ export default function Header() {
     return () => document.removeEventListener('mousedown', onDoc);
   }, [popoverOpen]);
 
-  const h = String(Math.floor(roundTime / 3600)).padStart(2, '0');
-  const m = String(Math.floor((roundTime % 3600) / 60)).padStart(2, '0');
-  const s = String(roundTime % 60).padStart(2, '0');
+  const session = simulation.session;
+  const clock = gameStatus === 'playing' ? clockFromTick(session, currentTick) : '--:--';
+  const sessionText = gameStatus === 'playing' ? sessionLabel[session] : 'Idle';
 
   const status = statusMap[gameStatus];
   const meta = roleMeta[role];
@@ -106,9 +91,9 @@ export default function Header() {
       </div>
 
       <div className="header-center">
-        <div className="round-time mono">{h}:{m}:{s}</div>
+        <div className="round-time mono">{clock}</div>
         <div className="market-status">
-          {gameStatus === 'playing' ? 'Market Open' : 'Market Closed'}
+          {sessionText}
         </div>
       </div>
 

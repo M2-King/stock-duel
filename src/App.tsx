@@ -72,7 +72,7 @@ function App() {
   const [section, setSection] = useState<NavSection>('overview');
   const [showSettlement, setShowSettlement] = useState(false);
 
-  const { role, gameStatus, setGameStatus, currentDay, maxDays, endMatch, startSimulation, stopSimulation } = useGameStore();
+  const { role, gameStatus, endMatch, startSimulation, stopSimulation } = useGameStore();
 
   // Update currentSection in store
   useEffect(() => {
@@ -89,16 +89,10 @@ function App() {
     return () => stopSimulation();
   }, [gameStatus, startSimulation, stopSimulation]);
   
-  // Auto-trigger settlement at end of game
-  useEffect(() => {
-    if (gameStatus === 'playing' && currentDay >= maxDays) {
-      const t = setTimeout(() => {
-        setGameStatus('settlement');
-      }, 1500);
-      return () => clearTimeout(t);
-    }
-  }, [gameStatus, currentDay, maxDays, setGameStatus]);
-  
+  // 结算由 store.endTradingDay 在最后一个交易日 15:00 收盘时触发（isFinalDay →
+  // endMatch + gameStatus='settlement'）。这里不再用 currentDay>=maxDays 提前
+  // 结束，否则第 5 天一开盘就会被强制结算。
+
   // Show settlement modal
   useEffect(() => {
     if (gameStatus === 'settlement') {
@@ -109,6 +103,15 @@ function App() {
   const handleCloseSettlement = () => {
     setShowSettlement(false);
     endMatch();
+    setSection('overview');
+  };
+
+  // "再来一局"：先整局重置（清空持仓、现金回到 1 亿），再进入匹配流程。
+  const handlePlayAgain = () => {
+    setShowSettlement(false);
+    const st = useGameStore.getState();
+    st.restartMatch();
+    st.startMatch();
     setSection('overview');
   };
 
@@ -205,6 +208,7 @@ function App() {
       <SettlementModal
         open={showSettlement}
         onClose={handleCloseSettlement}
+        onPlayAgain={handlePlayAgain}
       />
     </div>
   );

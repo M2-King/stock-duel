@@ -1,5 +1,5 @@
 import { useState, CSSProperties } from 'react';
-import { useGameStore, Role, UserSettings } from '../store/gameStore';
+import { useGameStore, Role, UserSettings, SPEED_PRESETS } from '../store/gameStore';
 import './Settings.css';
 
 const roleConfig = {
@@ -27,7 +27,7 @@ const roleConfig = {
 };
 
 export default function Settings() {
-  const { role, setRole, settings, updateSettings, userName, startMatch } = useGameStore();
+  const { role, setRole, settings, updateSettings, userName, startMatch, simulation, setSpeed } = useGameStore();
   const [activeTab, setActiveTab] = useState<'role' | 'preferences' | 'account' | 'about'>('role');
   
   const handleSettingChange = <K extends keyof UserSettings>(key: K, value: UserSettings[K]) => {
@@ -189,6 +189,40 @@ export default function Settings() {
             </div>
             
             <div className="tab-section">
+              <h3 className="tab-title">对局节奏 · Match Speed</h3>
+              <div className="setting-row">
+                <div>
+                  <div className="setting-label">一天现实时长</div>
+                  <div className="setting-desc">控制每个交易日跑完所需的现实时间（默认 6 分钟/天）</div>
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', maxWidth: 320, justifyContent: 'flex-end' }}>
+                  {SPEED_PRESETS.map((p) => {
+                    const active = Math.abs(simulation.speed - p.speed) < 0.01;
+                    return (
+                      <button
+                        key={p.label}
+                        title={p.label}
+                        onClick={() => setSpeed(p.speed)}
+                        style={{
+                          padding: '6px 12px',
+                          background: active ? 'var(--accent-blue, #2563eb)' : 'var(--bg-tertiary)',
+                          color: active ? '#fff' : 'var(--text-secondary)',
+                          border: '1px solid var(--border-color)',
+                          borderRadius: 6,
+                          cursor: 'pointer',
+                          fontSize: 12,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {p.minutesPerDay ? `${p.minutesPerDay} 分钟/天` : '快进 ⏩'}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div className="tab-section">
               <h3 className="tab-title">Appearance</h3>
               
               <ToggleItem
@@ -264,8 +298,8 @@ export default function Settings() {
             <div className="about-section">
               <h4>Game Features</h4>
               <ul className="feature-list">
-                <li>5 trading days, 7 minutes each</li>
-                <li>Real-time market simulation (200ms ticks)</li>
+                <li>5 个交易日，每天约 5–7 分钟（可在 Preferences 中调整）</li>
+                <li>实时行情模拟（默认约 3 秒/tick，一天 120 tick）</li>
                 <li>Role asymmetry: 6 manipulation tools vs chart analysis</li>
                 <li>Information asymmetry creates core gameplay tension</li>
                 <li>Regulator mode offers observer perspective with enforcement tools</li>

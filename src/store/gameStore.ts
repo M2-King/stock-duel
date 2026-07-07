@@ -1,6 +1,22 @@
 import { create } from 'zustand';
+import type { DealerInfo, RegulatoryScores } from '../types';
 
 export type Role = 'dealer' | 'retail' | 'regulator';
+
+// 对局速度预设：1 交易日 = 120 tick，tickInterval = 3000 / speed(ms)
+// 所以一天现实时长 = 120 * 3000 / speed / 1000 / 60 = 6 / speed 分钟。
+// 默认标准档一天 6 分钟，落在需求要求的 5~7 分钟区间内。
+export interface SpeedPreset {
+  label: string;
+  speed: number;
+  minutesPerDay: number | null;
+}
+export const SPEED_PRESETS: SpeedPreset[] = [
+  { label: '慢速 · 7 分钟/天', speed: 6 / 7, minutesPerDay: 7 },
+  { label: '标准 · 6 分钟/天', speed: 1, minutesPerDay: 6 },
+  { label: '快速 · 5 分钟/天', speed: 6 / 5, minutesPerDay: 5 },
+  { label: '快进 ⏩ 测试', speed: 4, minutesPerDay: null },
+];
 
 export interface NewsItem {
   id: string;
@@ -72,6 +88,15 @@ interface Indicators {
   boll: { upper: number; middle: number; lower: number };
 }
 
+export interface IndicatorSeries {
+  ma5: (number | null)[];
+  ma10: (number | null)[];
+  ma20: (number | null)[];
+  macd: { diff: (number | null)[]; dea: (number | null)[]; bar: (number | null)[] };
+  rsi: (number | null)[];
+  boll: { upper: (number | null)[]; middle: (number | null)[]; lower: (number | null)[] };
+}
+
 interface Holding {
   symbol: string;
   shares: number;
@@ -80,12 +105,6 @@ interface Holding {
   pnl: number;
   pnlPercent: number;
   sector: string;
-}
-
-interface Position {
-  symbol: string;
-  shares: number;
-  avgPrice: number;
 }
 
 interface Stock {
@@ -191,6 +210,11 @@ interface SimulationState {
   // Daily running P&L for the settlement modal
   dayOpenAssets: number;
   dayOpenPrice: number;
+  // Auto-advance timers
+  lunchAutoTimer: ReturnType<typeof setTimeout> | null;
+  dayAutoTimer: ReturnType<typeof setTimeout> | null;
+  // Simulation speed multiplier (1 = 12s/morning, 2 = 6s, 4 = 3s)
+  speed: number;
 }
 
 interface GameState {
@@ -205,7 +229,8 @@ interface GameState {
   currentTick: number;
   maxDays: number;
   maxTicksPerDay: number;
-  roundTime: number;
+  // roundTime removed — single clock now derived from (simulation.session, currentTick)
+  // in src/utils/clock.ts and consumed by Header + StatusBar.
 
   // Quote (Current selected stock)
   currentQuote: Quote;
@@ -213,16 +238,23 @@ interface GameState {
   timelineData: number[];
   orderBook: OrderBook;
   indicators: Indicators;
+  indicatorSeries: IndicatorSeries;
 
   // Market Data
   allStocks: Stock[];
   watchlist: string[];
+  // Per-symbol live price for multi-symbol mark-to-market
+  stockPrices: Record<string, number>;
   indices: { name: string; value: number; change: number }[];
 
   // Portfolio
   holdings: Holding[];
   portfolioTotal: number;
+  totalAssets: number; // mirrors portfolioTotal for clarity across pages
   cash: number;
+  // playerCash is a public alias for cash. Components (RegulatorPanel / RetailPanel
+  // / TradePanel) read playerCash; setters below keep both fields in sync.
+  playerCash: number;
   todayPnl: number;
   todayPnlPercent: number;
   unrealizedPnl: number;
@@ -241,11 +273,18 @@ interface GameState {
 
   // Dealer
   dealerResources: DealerResources | null;
+  // dealerInfo is the full DealerInfo shape (resources + hiddenInfo); components
+  // that need the rich shape read this. The leaner dealerResources stays for
+  // the tick engine and DealerPanel fallback.
+  dealerInfo: DealerInfo | null;
   insiderData: InsiderData | null;
 
   // Regulator
   alerts: Alert[];
   regulatoryScores: { manipulation: number; insider: number; misinformation: number };
+  // scores is a public alias for regulatoryScores (RegulatorPanel reads it).
+  // Kept in sync by adjustScores and restartMatch.
+  scores: RegulatoryScores;
 
   // Messages
   messages: Message[];
@@ -283,6 +322,7 @@ interface GameState {
 
   placeOrder: (order: Omit<OrderRecord, 'id' | 'timestamp'>) => { success: boolean; error?: string };
   setLeverage: (leverage: number) => void;
+  setSpeed: (speed: number) => void;
   closePosition: (symbol: string, price: number) => void;
 
   addNews: (news: NewsItem) => void;
@@ -295,7 +335,7 @@ interface GameState {
 
   executeDealerAction: (action: { type: string; cost: number; energy: number; risk: number; power: number }) => { success: boolean; error?: string };
   triggerBlackSwan: () => void;
-  purchaseInsiderInfo: (newsId: string, cost: number) => boolean;
+  purchaseInsiderInfo: (newsId: string, cost: number) => { success: boolean; tip?: string; trustworthy?: boolean; error?: string };
 
   setReversalCards: (cards: ReversalCard[]) => void;
   revealReversalCard: (index: number) => void;
@@ -304,6 +344,8 @@ interface GameState {
   startMatch: () => void;
   cancelMatch: () => void;
   endMatch: () => void;
+  restartMatch: () => void;
+  setDealerInfo: (info: DealerInfo | null) => void;
 
   // Tick engine
   startSimulation: () => void;
@@ -354,6 +396,15 @@ const initialIndicators: Indicators = {
   boll: { upper: 96.20, middle: 93.80, lower: 91.40 },
 };
 
+const initialIndicatorSeries: IndicatorSeries = {
+  ma5: [],
+  ma10: [],
+  ma20: [],
+  macd: { diff: [], dea: [], bar: [] },
+  rsi: [],
+  boll: { upper: [], middle: [], lower: [] },
+};
+
 const allStocks: Stock[] = [
   { symbol: 'QDN', name: 'Quantum Dynamics', sector: 'Technology', price: 94.89, change: 2.34, changePercent: 2.53, volume: 2480000, marketCap: '12.4B', pe: 45.2 },
   { symbol: 'AAPL', name: 'Apple Inc.', sector: 'Technology', price: 182.33, change: 1.25, changePercent: 0.69, volume: 58200000, marketCap: '2.85T', pe: 28.4 },
@@ -390,10 +441,14 @@ const initialPlayers: Player[] = [
   { id: 'p6', name: 'SEC_Enforcer', rank: 6, totalAssets: 98765400, weeklyReturn: 0, role: 'regulator' },
 ];
 
+// 所有玩家初始资产一致：1亿现金 + 空仓 = 1亿
+// IMPORTANT: starting assets must match simulation.initialAssets (1亿) for the player whose role matches.
+// Otherwise the settlement ranking shows a phantom "loss" at game start.
+const STARTING_ASSETS = 100000000;
 const initialPlayersInGame: Player[] = [
-  { id: 'p1', name: 'Market Maker', rank: 0, totalAssets: 100000000, weeklyReturn: 0, role: 'dealer' },
-  { id: 'p2', name: 'Retail Investor', rank: 0, totalAssets: 82292000, weeklyReturn: 0, role: 'retail' },
-  { id: 'p3', name: 'SEC Agent', rank: 0, totalAssets: 50000000, weeklyReturn: 0, role: 'regulator' },
+  { id: 'p1', name: 'Market Maker', rank: 0, totalAssets: STARTING_ASSETS, weeklyReturn: 0, role: 'dealer' },
+  { id: 'p2', name: 'Retail Investor', rank: 0, totalAssets: STARTING_ASSETS, weeklyReturn: 0, role: 'retail' },
+  { id: 'p3', name: 'SEC Agent', rank: 0, totalAssets: STARTING_ASSETS, weeklyReturn: 0, role: 'regulator' },
 ];
 
 const initialNews: NewsItem[] = [
@@ -480,8 +535,8 @@ export const useGameStore = create<GameState>((set, get) => ({
   currentDay: 1,
   currentTick: 87,
   maxDays: 5,
-  maxTicksPerDay: 210,
-  roundTime: 12 * 3600 + 20 * 60 + 23,
+  maxTicksPerDay: 120, // 60 上午 + 60 下午（午休不计入 tick）
+  // (roundTime removed; clock now lives in src/utils/clock.ts)
   
   currentQuote: initialQuote,
   klines: [],
@@ -503,22 +558,26 @@ export const useGameStore = create<GameState>((set, get) => ({
     ],
   },
   indicators: initialIndicators,
+  indicatorSeries: initialIndicatorSeries,
 
   allStocks,
   watchlist: ['QDN', 'AAPL', 'TSLA', 'NVDA'],
   indices: initialIndices,
+  // Per-symbol live price, seeded from allStocks so multi-symbol
+  // mark-to-market has a baseline for every holding.
+  stockPrices: allStocks.reduce<Record<string, number>>((acc, s) => {
+    acc[s.symbol] = s.price;
+    return acc;
+  }, {}),
 
-  holdings: [
-    { symbol: 'QDN', shares: 500, avgPrice: 90.12, marketPrice: 94.89, pnl: 2385, pnlPercent: 5.30, sector: 'Technology' },
-    { symbol: 'AAPL', shares: 200, avgPrice: 175.45, marketPrice: 182.33, pnl: 1375, pnlPercent: 3.92, sector: 'Technology' },
-    { symbol: 'TSLA', shares: 100, avgPrice: 245.10, marketPrice: 248.85, pnl: 375, pnlPercent: 1.53, sector: 'Automotive' },
-    { symbol: 'NVDA', shares: 80, avgPrice: 482.30, marketPrice: 495.12, pnl: 1024, pnlPercent: 2.66, sector: 'Semiconductors' },
-  ],
-  portfolioTotal: 82292000,
-  cash: 2500000,
-  todayPnl: 629200,
-  todayPnlPercent: 2.15,
-  unrealizedPnl: 2130000,
+  holdings: [],
+  portfolioTotal: STARTING_ASSETS,
+  totalAssets: STARTING_ASSETS,
+  cash: STARTING_ASSETS,
+  playerCash: STARTING_ASSETS,
+  todayPnl: 0,
+  todayPnlPercent: 0,
+  unrealizedPnl: 0,
   leverage: 2,
   orderHistory: [
     { id: 'o1', symbol: 'QDN', type: 'market', side: 'buy', price: 90.12, quantity: 500, status: 'filled', timestamp: Date.now() - 86400000 },
@@ -550,6 +609,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   players: initialPlayersInGame,
   leaderboard: initialPlayers,
   dealerResources: { cash: 50000000, energy: 100, riskIndex: 32 },
+  dealerInfo: null,
   insiderData: {
     revenue: '¥2.4B',
     profit: '¥340M',
@@ -559,6 +619,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   },
   alerts: initialAlerts,
   regulatoryScores: { manipulation: 32.5, insider: 18.2, misinformation: 12.8 },
+  scores: { manipulation: 32.5, insider: 18.2, misinformation: 12.8 },
   messages: initialMessages,
   settings: initialSettings,
 
@@ -570,7 +631,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   matchOpponentName: 'WhaleKing_88',
 
-  simulation: {
+simulation: {
     timer: null,
     klineTimer: null,
     newsTimer: null,
@@ -580,12 +641,17 @@ export const useGameStore = create<GameState>((set, get) => ({
     lastIndexTrigger: { manipulation: 0, insider: 0, misinformation: 0 },
     fakeOrderRestore: null,
     settlementComputed: false,
-    initialAssets: 82292000,
-    opponentAssets: 82292000,
+    initialAssets: STARTING_ASSETS,
+    opponentAssets: STARTING_ASSETS,
     session: 'morning',
     dailySettlement: null,
-    dayOpenAssets: 82292000,
+    // Day-open anchor: cash + position value at the moment the day started.
+    // Initialized to STARTING_ASSETS (no holdings, no prior trading).
+    dayOpenAssets: STARTING_ASSETS,
     dayOpenPrice: 94.85,
+    lunchAutoTimer: null,
+    dayAutoTimer: null,
+    speed: 1,
   },
 
   toast: null,
@@ -594,11 +660,24 @@ export const useGameStore = create<GameState>((set, get) => ({
   currentSection: 'overview' as string,
   
   setSection: (section) => set({ currentSection: section }),
-  
+
   // Actions
   setRole: (role) => set({ role }),
-  
+
   setGameStatus: (gameStatus) => set({ gameStatus }),
+
+  setDealerInfo: (info) => set({
+    dealerInfo: info,
+    // Keep dealerResources in sync with the resources sub-field so the tick
+    // engine can keep using the lean shape without re-reading the full object.
+    dealerResources: info
+      ? {
+          cash: info.resources.cash,
+          energy: info.resources.energy,
+          riskIndex: info.resources.riskIndex,
+        }
+      : null,
+  }),
   
   updateQuote: (quote) => set((s) => ({ currentQuote: { ...s.currentQuote, ...quote } })),
   
@@ -703,14 +782,16 @@ export const useGameStore = create<GameState>((set, get) => ({
       const unrealizedPnl = holdings.reduce((sum, h) => sum + h.pnl, 0);
       const positionValue = holdings.reduce((sum, h) => sum + h.marketPrice * h.shares, 0);
       const portfolioTotal = cash + positionValue;
-      const todayPnl = portfolioTotal - (s.simulation.initialAssets || 82292000);
-      const todayPnlPercent = (todayPnl / (s.simulation.initialAssets || 82292000)) * 100;
+      const todayPnl = portfolioTotal - s.simulation.initialAssets;
+      const todayPnlPercent = (todayPnl / s.simulation.initialAssets) * 100;
       return {
         orderHistory,
         cash,
+        playerCash: cash,
         holdings,
         unrealizedPnl,
         portfolioTotal,
+        totalAssets: portfolioTotal,
         todayPnl,
         todayPnlPercent,
         totalTradeCount: s.totalTradeCount + 1,
@@ -731,25 +812,97 @@ export const useGameStore = create<GameState>((set, get) => ({
       const h = s.holdings.find(x => x.symbol === symbol);
       if (!h) return s;
       const proceeds = h.shares * price;
-      const pnl = (price - h.avgPrice) * h.shares;
+      const newOrder: OrderRecord = {
+        id: `close_${Date.now()}`,
+        symbol,
+        type: 'market',
+        side: 'sell',
+        price,
+        quantity: h.shares,
+        status: 'filled',
+        timestamp: Date.now(),
+      };
       return {
         cash: s.cash + proceeds,
+        playerCash: s.cash + proceeds,
         holdings: s.holdings.filter(x => x.symbol !== symbol),
-        orderHistory: [{
-          id: `close_${Date.now()}`,
-          symbol,
-          type: 'market',
-          side: 'sell',
-          price,
-          quantity: h.shares,
-          status: 'filled',
-          timestamp: Date.now(),
-        }, ...s.orderHistory].slice(0, 50),
+        orderHistory: [newOrder, ...s.orderHistory].slice(0, 50),
       };
     });
   },
 
   setLeverage: (leverage) => set({ leverage }),
+
+  setSpeed: (speed) => {
+    // 下限放宽到 0.5，以支持"慢速 7 分钟/天"(speed≈0.857) 这类分数档位。
+    const clamped = Math.max(0.5, Math.min(8, speed));
+    const state = get();
+    set({ simulation: { ...state.simulation, speed: clamped } });
+    // Re-arm timers if currently playing so the new interval takes effect
+    if (state.gameStatus === 'playing') {
+      get().stopSimulation();
+      get().startSimulation();
+    }
+  },
+
+  restartMatch: () => {
+    // Stop timers, reset core state, return to idle (MatchOverlay will appear)
+    get().stopSimulation();
+    const seedStock = get().allStocks[0];
+    set({
+      gameStatus: 'idle',
+      currentDay: 1,
+      currentTick: 0,
+      currentQuote: {
+        symbol: seedStock.symbol,
+        name: seedStock.name,
+        price: seedStock.price,
+        prevClose: seedStock.price,
+        open: seedStock.price,
+        high: seedStock.price,
+        low: seedStock.price,
+        change: 0,
+        changePercent: 0,
+        volume: 0,
+        amount: 0,
+        timestamp: Date.now(),
+      },
+      klines: [],
+      timelineData: [],
+      holdings: [],
+      orderHistory: [],
+      cash: STARTING_ASSETS,
+      playerCash: STARTING_ASSETS,
+      portfolioTotal: STARTING_ASSETS,
+      totalAssets: STARTING_ASSETS,
+      todayPnl: 0,
+      todayPnlPercent: 0,
+      unrealizedPnl: 0,
+      totalTradeCount: 0,
+      bestTradePnl: 0,
+      simulation: {
+        ...get().simulation,
+        session: 'morning',
+        dayOpenAssets: 100000000,
+        dayOpenPrice: get().currentQuote.price,
+        dailySettlement: null,
+        lunchAutoTimer: null,
+        dayAutoTimer: null,
+        initialAssets: 100000000,
+        opponentAssets: 100000000,
+        finalAssets: undefined,
+        returnRate: undefined,
+        settlementComputed: false,
+      },
+      regulatoryScores: { manipulation: 0, insider: 0, misinformation: 0 },
+      scores: { manipulation: 0, insider: 0, misinformation: 0 },
+      dealerInfo: null,
+      indicators: initialIndicators,
+      indicatorSeries: initialIndicatorSeries,
+      alerts: [],
+      toast: null,
+    });
+  },
   
   addNews: (news) => set((s) => ({
     news: [news, ...s.news].slice(0, 30)
@@ -791,12 +944,14 @@ export const useGameStore = create<GameState>((set, get) => ({
   
   adjustScores: (delta) => set((s) => {
     const clamp = (v: number) => Math.max(0, Math.min(100, v));
+    const next = {
+      manipulation: clamp(s.regulatoryScores.manipulation + (delta.manipulation ?? 0)),
+      insider: clamp(s.regulatoryScores.insider + (delta.insider ?? 0)),
+      misinformation: clamp(s.regulatoryScores.misinformation + (delta.misinformation ?? 0)),
+    };
     return {
-      regulatoryScores: {
-        manipulation: clamp(s.regulatoryScores.manipulation + (delta.manipulation ?? 0)),
-        insider: clamp(s.regulatoryScores.insider + (delta.insider ?? 0)),
-        misinformation: clamp(s.regulatoryScores.misinformation + (delta.misinformation ?? 0)),
-      },
+      regulatoryScores: next,
+      scores: next,
     };
   }),
   
@@ -869,11 +1024,13 @@ export const useGameStore = create<GameState>((set, get) => ({
       case 'wash':
         newVolume = state.currentQuote.volume * (1 + 1.5 * intensity);
         break;
-      case 'fake':
-        fakeOrderBookRestore = JSON.parse(JSON.stringify(state.orderBook));
+      case 'fake': {
+        const fakeBook: OrderBook = JSON.parse(JSON.stringify(state.orderBook));
         const idx = Math.floor(Math.random() * 5);
-        fakeOrderBookRestore.asks[idx] = { ...fakeOrderBookRestore.asks[idx], quantity: fakeOrderBookRestore.asks[idx].quantity * 8 };
+        fakeBook.asks[idx] = { ...fakeBook.asks[idx], quantity: fakeBook.asks[idx].quantity * 8 };
+        fakeOrderBookRestore = fakeBook;
         break;
+      }
     }
 
     newPrice = Math.max(1, newPrice);
@@ -889,22 +1046,39 @@ export const useGameStore = create<GameState>((set, get) => ({
       scoreDelta.misinformation = risk * intensity / 2;
     }
 
-    set({
-      currentQuote: {
-        ...state.currentQuote,
-        price: newPrice,
-        change: newChange,
-        changePercent: newChangePct,
-        volume: newVolume,
-        timestamp: Date.now(),
-      },
-      orderBook: fakeOrderBookRestore || state.orderBook,
-      dealerResources: {
-        cash: state.dealerResources.cash - cost + extraCashEffect,
-        energy: Math.max(0, state.dealerResources.energy - energy),
-        riskIndex: Math.min(100, state.dealerResources.riskIndex + intensity * 1.5),
-      },
+    set((s) => {
+      const newTimeline = [...s.timelineData, newPrice].slice(-240);
+      const dr = s.dealerResources;
+      return {
+        currentQuote: {
+          ...s.currentQuote,
+          price: newPrice,
+          change: newChange,
+          changePercent: newChangePct,
+          volume: newVolume,
+          timestamp: Date.now(),
+        },
+        stockPrices: { ...s.stockPrices, [s.currentQuote.symbol]: newPrice },
+        orderBook: fakeOrderBookRestore ?? s.orderBook,
+        dealerResources: dr ? {
+          cash: dr.cash - cost + extraCashEffect,
+          energy: Math.max(0, dr.energy - energy),
+          riskIndex: Math.min(100, dr.riskIndex + intensity * 1.5),
+        } : null,
+        timelineData: newTimeline,
+        // also mark-to-market all holdings of this symbol
+        holdings: s.holdings.map((h) => h.symbol === s.currentQuote.symbol
+          ? {
+              ...h,
+              marketPrice: newPrice,
+              pnl: (newPrice - h.avgPrice) * h.shares,
+              pnlPercent: h.avgPrice > 0 ? ((newPrice - h.avgPrice) / h.avgPrice) * 100 : 0,
+            }
+          : h),
+      };
     });
+
+    get().recalculateIndicators();
 
     if (Object.keys(scoreDelta).length > 0) {
       get().adjustScores(scoreDelta);
@@ -960,6 +1134,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         changePercent: ((newPrice - state.currentQuote.prevClose) / state.currentQuote.prevClose) * 100,
         timestamp: Date.now(),
       },
+      stockPrices: { ...state.stockPrices, [state.currentQuote.symbol]: newPrice },
       dealerResources: state.dealerResources ? {
         ...state.dealerResources,
         riskIndex: Math.min(100, state.dealerResources.riskIndex + 25),
@@ -980,16 +1155,41 @@ export const useGameStore = create<GameState>((set, get) => ({
     });
   },
   
-  purchaseInsiderInfo: (newsId, cost) => {
+  purchaseInsiderInfo: (_newsId, cost) => {
     const state = get();
-    if (state.cash < cost) return false;
-    // Increase insider score, decrease cash
+    if (state.cash < cost) {
+      get().showToast(`资金不足: 内幕信息需 ¥${cost.toLocaleString()}，可用 ¥${state.cash.toLocaleString()}`, 'warning');
+      return { success: false, error: '资金不足' };
+    }
+    const trustworthy = Math.random() < 0.6;
+    const tips = trustworthy
+      ? [
+        '机构正在大举建仓，主力资金持续流入',
+        '财报内测超预期，分析师已上调目标价',
+        '公司即将宣布重大资产重组',
+      ]
+      : [
+        '坊间传闻公司将被收购（已证伪）',
+        '明日有重大利好公告（虚假信息）',
+        '高管即将集体增持（信息有误）',
+      ];
+    const tip = tips[Math.floor(Math.random() * tips.length)];
+    const nextCash = state.cash - cost;
+    const nextScores = {
+      ...state.regulatoryScores,
+      insider: Math.min(100, state.regulatoryScores.insider + 5),
+      misinformation: trustworthy
+        ? Math.min(100, state.regulatoryScores.misinformation + 1)
+        : Math.min(100, state.regulatoryScores.misinformation + 4),
+    };
     set({
-      cash: state.cash - cost,
-      regulatoryScores: {
-        ...state.regulatoryScores,
-        insider: Math.min(100, state.regulatoryScores.insider + 5),
-        misinformation: Math.min(100, state.regulatoryScores.misinformation + 2),
+      cash: nextCash,
+      playerCash: nextCash,
+      regulatoryScores: nextScores,
+      scores: {
+        manipulation: nextScores.manipulation,
+        insider: nextScores.insider,
+        misinformation: nextScores.misinformation,
       },
     });
     get().addAlert({
@@ -1000,7 +1200,11 @@ export const useGameStore = create<GameState>((set, get) => ({
       timestamp: Date.now(),
       source: 'Insider Trading Monitor',
     });
-    return true;
+    get().showToast(
+      `${trustworthy ? '✅ 真消息' : '⚠️ 假消息'}: ${tip}`,
+      trustworthy ? 'success' : 'warning',
+    );
+    return { success: true, tip, trustworthy };
   },
   
   setReversalCards: (cards) => set({ reversalCards: cards }),
@@ -1015,7 +1219,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   }),
   
   randomizeMyRole: () => {
-    set((s) => {
+    set((_s) => {
       const cards: [Role, Role, Role] = ['dealer', 'retail', 'regulator'];
       const shuffled = [...cards].sort(() => Math.random() - 0.5);
       const myIndex = Math.floor(Math.random() * 3);
@@ -1046,7 +1250,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const finalCash = state.cash;
     const finalPositions = state.holdings.reduce((sum, h) => sum + h.marketPrice * h.shares, 0);
     const finalAssets = finalCash + finalPositions;
-    const initialAssets = state.simulation.initialAssets || 82292000;
+    const initialAssets = state.simulation.initialAssets;
     const returnRate = ((finalAssets - initialAssets) / initialAssets) * 100;
     // Mock opponent: simulate opponent return ~ random
     const opponentReturn = (Math.random() - 0.45) * 18; // opponent bias slightly down
@@ -1063,8 +1267,14 @@ export const useGameStore = create<GameState>((set, get) => ({
         initialAssets,
         opponentAssets,
         returnRate,
+        session: 'closed',
+        dailySettlement: null,
+        lunchAutoTimer: null,
+        dayAutoTimer: null,
       } as SimulationState,
     });
+    if (state.simulation.lunchAutoTimer) clearTimeout(state.simulation.lunchAutoTimer);
+    if (state.simulation.dayAutoTimer) clearTimeout(state.simulation.dayAutoTimer);
     get().stopSimulation();
   },
   
@@ -1076,7 +1286,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     messages: s.messages.map(m => m.id === id ? { ...m, read: true } : m)
   })),
   
-  sendMessage: (to, subject, content) => {
+  sendMessage: (_to, subject, content) => {
     const id = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const state = get();
     set((s) => ({
@@ -1115,10 +1325,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const dayPnl = totalAssets - state.simulation.dayOpenAssets;
     const dayPnlPct = (dayPnl / state.simulation.dayOpenAssets) * 100;
     const lastPrice = state.currentQuote.price;
-    const morningPnl = lastPrice - state.simulation.dayOpenPrice;
-    const morningPnlPct = (morningPnl / state.simulation.dayOpenPrice) * 100;
 
-    // Show lunch break modal — keep gameStatus='playing' so the modal is purely informational
     set({
       gameStatus: 'idle',
       currentTick: 0,
@@ -1134,21 +1341,32 @@ export const useGameStore = create<GameState>((set, get) => ({
           trades: state.totalTradeCount,
           isFinal: false,
         },
-        // Persist a fresh "open" baseline for the afternoon session
         dayOpenPrice: lastPrice,
         dayOpenAssets: totalAssets,
       },
     });
 
     get().showToast('11:30 中午收盘｜13:00 下午开盘', 'info');
+
+    // Auto-resume afternoon after 90s (simulating 1.5h lunch break in fast-forward)
+    if (state.simulation.lunchAutoTimer) clearTimeout(state.simulation.lunchAutoTimer);
+    const t = setTimeout(() => {
+      if (get().simulation.session === 'lunch') {
+        get().resumeAfternoon();
+      }
+    }, 90000);
+    set((s) => ({ simulation: { ...s.simulation, lunchAutoTimer: t } }));
   },
 
   resumeAfternoon: () => {
     const state = get();
     if (state.gameStatus !== 'idle' || state.simulation.session !== 'lunch') return;
+    if (state.simulation.lunchAutoTimer) {
+      clearTimeout(state.simulation.lunchAutoTimer);
+    }
     set({
       gameStatus: 'playing',
-      simulation: { ...state.simulation, session: 'afternoon', dailySettlement: null },
+      simulation: { ...state.simulation, session: 'afternoon', dailySettlement: null, lunchAutoTimer: null },
     });
   },
 
@@ -1160,7 +1378,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const closedDay = state.currentDay;
     const isFinalDay = closedDay >= state.maxDays;
 
-    // Compute daily settlement stats (afternoon + morning combined)
+    // Compute daily settlement stats
     const positions = state.holdings.reduce((s, h) => s + h.marketPrice * h.shares, 0);
     const totalAssets = state.cash + positions;
     const dayPnl = totalAssets - state.simulation.dayOpenAssets;
@@ -1169,7 +1387,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     const todayOpen = state.simulation.dayOpenPrice;
 
     if (isFinalDay) {
-      // Final day → full game settlement
       get().showToast(`第 ${closedDay} 日 15:00 收盘｜全部交易日结束`, 'success');
       get().endMatch();
       set({ gameStatus: 'settlement' });
@@ -1193,12 +1410,25 @@ export const useGameStore = create<GameState>((set, get) => ({
         },
       },
     });
+
+    // Auto-advance to next day after 120s (2 minutes — user-requested buffer)
+    if (state.simulation.dayAutoTimer) clearTimeout(state.simulation.dayAutoTimer);
+    const t = setTimeout(() => {
+      if (get().simulation.session === 'closed') {
+        get().resumeNextDay();
+      }
+    }, 120000);
+    set((s) => ({ simulation: { ...s.simulation, dayAutoTimer: t } }));
   },
 
   resumeNextDay: () => {
     const state = get();
     if (state.gameStatus !== 'idle' || state.simulation.session !== 'closed') return;
     const lastPrice = state.currentQuote.price;
+
+    if (state.simulation.dayAutoTimer) {
+      clearTimeout(state.simulation.dayAutoTimer);
+    }
 
     set({
       gameStatus: 'playing',
@@ -1234,6 +1464,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         dailySettlement: null,
         dayOpenPrice: lastPrice,
         dayOpenAssets: state.cash + state.holdings.reduce((s, h) => s + h.marketPrice * h.shares, 0),
+        dayAutoTimer: null,
       },
     });
   },
@@ -1242,6 +1473,17 @@ export const useGameStore = create<GameState>((set, get) => ({
     const state = get();
     if (state.simulation.timer) return; // already running
     if (state.gameStatus !== 'playing') return;
+
+    // Pacing: 1 day = 120 ticks (60 morning + 60 afternoon, lunch break collapsed).
+    // Default speed (1x) targets ~6 min per simulated trading day.
+    //   1x → 3000ms/tick → 120 ticks = 360s = 6 min/day
+    //   2x → 1500ms/tick → 120 ticks = 180s = 3 min/day
+    //   4x →  750ms/tick → 120 ticks =  90s = 1.5 min/day
+    const speed = Math.max(0.5, Math.min(8, state.simulation.speed || 1));
+    const tickInterval = Math.max(60, Math.floor(3000 / speed));
+    const klineInterval = Math.max(2000, tickInterval * 8);
+    const newsBase = Math.max(8000, tickInterval * 20);
+    const newsRand = Math.max(4000, tickInterval * 20);
 
     // Initialize kline baseline
     set({
@@ -1252,19 +1494,19 @@ export const useGameStore = create<GameState>((set, get) => ({
       },
     });
 
-    // Tick every 200ms - geometric Brownian motion price update
+    // Tick: geometric Brownian motion price update (interval scales with speed)
     const tickTimer = setInterval(() => {
       get().processTick();
-    }, 200);
+    }, tickInterval);
 
-    // Aggregate K-line every 30s
+    // Aggregate K-line
     const klineTimer = setInterval(() => {
       get().aggregateKline();
-    }, 30000);
+    }, klineInterval);
 
-    // Random news every 30-60s
+    // Random news
     const scheduleNews = () => {
-      const delay = 30000 + Math.random() * 30000;
+      const delay = newsBase + Math.random() * newsRand;
       const t = setTimeout(() => {
         if (get().gameStatus === 'playing') {
           get().pushRandomNews();
@@ -1319,10 +1561,16 @@ export const useGameStore = create<GameState>((set, get) => ({
         settlementComputed: s.settlementComputed,
         initialAssets: s.initialAssets,
         opponentAssets: s.opponentAssets,
+        // 保留结算结果，避免 endMatch 计算完 finalAssets 后被 stopSimulation 抹掉。
+        finalAssets: s.finalAssets,
+        returnRate: s.returnRate,
         session: s.session,
         dailySettlement: s.dailySettlement,
         dayOpenAssets: s.dayOpenAssets,
         dayOpenPrice: s.dayOpenPrice,
+        lunchAutoTimer: s.lunchAutoTimer,
+        dayAutoTimer: s.dayAutoTimer,
+        speed: s.speed,
       },
     });
   },
@@ -1354,35 +1602,45 @@ export const useGameStore = create<GameState>((set, get) => ({
       },
       timelineData: [...state.timelineData, newPrice].slice(-500),
       currentTick: state.currentTick + 1,
+      // Track per-symbol price for multi-symbol mark-to-market.
+      stockPrices: { ...state.stockPrices, [state.currentQuote.symbol]: newPrice },
     });
 
     // Daily pacing: 4 trading segments separated by 11:30 lunch break and 15:00 close
     // 09:30-10:30 (60)  10:30-11:30 (60)  lunch  13:00-14:00 (60)  14:00-15:00 (60)
-    const TICKS_PER_HALF = 120;       // 09:30-11:30 or 13:00-15:00 = 120 ticks each
+    // 1 上午/下午盘 = 60 tick = ~3 min 现实时间（1x 速度）
+    // 1 整天 = 120 tick (60 上午 + 60 下午，午休在 store 端跳过不进 timeline)
+    const TICKS_PER_HALF = 60;
     const nextTick = state.currentTick + 1;
-    if (nextTick === TICKS_PER_HALF) {
-      // 11:30 lunch break
+    const session = state.simulation.session;
+    if (session === 'morning' && nextTick >= TICKS_PER_HALF) {
+      // 11:30 上午收盘 → 午休
       get().endLunchBreak();
-    } else if (nextTick >= TICKS_PER_HALF * 2) {
-      // 15:00 close
+    } else if (session === 'afternoon' && nextTick >= TICKS_PER_HALF) {
+      // 15:00 全天收盘
       get().endTradingDay();
     }
 
-    // Update holdings market price & pnl based on selected symbol
+    // Multi-symbol mark-to-market: every holding uses its own stockPrices[symbol].
+    // Holdings of symbols not currently selected still get marked at their last known price.
     set((s) => {
-      if (s.currentQuote.symbol === '__ALL__' || s.holdings.every(h => h.symbol !== s.currentQuote.symbol)) return s;
-      const holdings = s.holdings.map(h => h.symbol === s.currentQuote.symbol ? {
-        ...h,
-        marketPrice: newPrice,
-        pnl: (newPrice - h.avgPrice) * h.shares,
-        pnlPercent: ((newPrice - h.avgPrice) / h.avgPrice) * 100,
-      } : h);
+      if (s.holdings.length === 0) return s;
+      const holdings = s.holdings.map(h => {
+        const marketPrice = s.stockPrices[h.symbol] ?? h.marketPrice ?? h.avgPrice;
+        return {
+          ...h,
+          marketPrice,
+          pnl: (marketPrice - h.avgPrice) * h.shares,
+          pnlPercent: h.avgPrice > 0 ? ((marketPrice - h.avgPrice) / h.avgPrice) * 100 : 0,
+        };
+      });
       const positionValue = holdings.reduce((sum, h) => sum + h.marketPrice * h.shares, 0);
       const unrealizedPnl = holdings.reduce((sum, h) => sum + h.pnl, 0);
       const portfolioTotal = s.cash + positionValue;
-      const todayPnl = portfolioTotal - (s.simulation.initialAssets || 82292000);
-      const todayPnlPercent = (todayPnl / (s.simulation.initialAssets || 82292000)) * 100;
-      return { holdings, portfolioTotal, unrealizedPnl, todayPnl, todayPnlPercent };
+      const initialAssets = s.simulation.initialAssets || STARTING_ASSETS;
+      const todayPnl = portfolioTotal - initialAssets;
+      const todayPnlPercent = initialAssets > 0 ? (todayPnl / initialAssets) * 100 : 0;
+      return { holdings, portfolioTotal, totalAssets: portfolioTotal, unrealizedPnl, todayPnl, todayPnlPercent };
     });
 
     // Update order book occasionally (every 5 ticks)
@@ -1441,67 +1699,91 @@ export const useGameStore = create<GameState>((set, get) => ({
   recalculateIndicators: () => {
     const state = get();
     const closes = state.klines.map(k => k.close);
-    if (closes.length < 5) return;
-    const ma = (n: number) => {
-      const slice = closes.slice(-n);
-      return slice.reduce((a, b) => a + b, 0) / slice.length;
-    };
-    const ma5 = ma(5);
-    const ma10 = ma(10);
-    const ma20 = ma(20);
+    const n = closes.length;
+    if (n < 5) return;
 
-    // EMA helper
-    const ema = (data: number[], period: number) => {
-      const k = 2 / (period + 1);
-      let e = data[0];
-      for (let i = 1; i < data.length; i++) e = data[i] * k + e * (1 - k);
-      return e;
-    };
-    let diff = 0, dea = 0;
-    if (closes.length >= 26) {
-      const ema12 = ema(closes.slice(-26), 12);
-      const ema26 = ema(closes.slice(-26), 26);
-      diff = ema12 - ema26;
-      // simplified DEA using diff series
-      const diffSeries: number[] = [];
-      for (let i = 25; i < closes.length; i++) {
-        const e12 = ema(closes.slice(0, i + 1), 12);
-        const e26 = ema(closes.slice(0, i + 1), 26);
-        diffSeries.push(e12 - e26);
+    const sma = (arr: number[], period: number) => {
+      const out: (number | null)[] = new Array(arr.length).fill(null);
+      for (let i = 0; i < arr.length; i++) {
+        if (i + 1 < period) continue;
+        let s = 0;
+        for (let j = i + 1 - period; j <= i; j++) s += arr[j];
+        out[i] = s / period;
       }
-      dea = ema(diffSeries, 9);
-    }
-    const bar = (diff - dea) * 2;
+      return out;
+    };
+    const ma5Series = sma(closes, 5);
+    const ma10Series = sma(closes, 10);
+    const ma20Series = sma(closes, 20);
 
-    // RSI(14)
-    let rsi = 50;
-    if (closes.length >= 15) {
-      const recent = closes.slice(-15);
+    // EMA series
+    const ema = (arr: number[], period: number) => {
+      const k = 2 / (period + 1);
+      const out: (number | null)[] = new Array(arr.length).fill(null);
+      let e = arr[0];
+      out[0] = e;
+      for (let i = 1; i < arr.length; i++) {
+        e = arr[i] * k + e * (1 - k);
+        out[i] = e;
+      }
+      return out;
+    };
+    const ema12 = ema(closes, 12);
+    const ema26 = ema(closes, 26);
+    const diffSeries = ema12.map((v, i) => v !== null && ema26[i] !== null ? (v as number) - (ema26[i] as number) : null);
+    const deaSeries = ema(diffSeries as number[], 9);
+    const barSeries = diffSeries.map((v, i) => v !== null && deaSeries[i] !== null ? ((v as number) - (deaSeries[i] as number)) * 2 : null);
+
+    // RSI(14) series
+    const rsiSeries: (number | null)[] = new Array(n).fill(null);
+    for (let i = 14; i < n; i++) {
       let gains = 0, losses = 0;
-      for (let i = 1; i < recent.length; i++) {
-        const d = recent[i] - recent[i - 1];
+      for (let j = i - 13; j <= i; j++) {
+        const d = closes[j] - closes[j - 1];
         if (d > 0) gains += d; else losses -= d;
       }
       const avgGain = gains / 14;
       const avgLoss = losses / 14;
-      if (avgLoss === 0) rsi = 100;
-      else {
-        const rs = avgGain / avgLoss;
-        rsi = 100 - 100 / (1 + rs);
-      }
+      if (avgLoss === 0) rsiSeries[i] = 100;
+      else rsiSeries[i] = 100 - 100 / (1 + avgGain / avgLoss);
     }
 
-    // BOLL(20, 2)
-    let boll = { upper: ma20, middle: ma20, lower: ma20 };
-    if (closes.length >= 20) {
-      const slice = closes.slice(-20);
-      const mean = ma20;
-      const variance = slice.reduce((sum, v) => sum + (v - mean) ** 2, 0) / 20;
+    // BOLL(20, 2) series
+    const bollUpper: (number | null)[] = new Array(n).fill(null);
+    const bollMid: (number | null)[] = new Array(n).fill(null);
+    const bollLower: (number | null)[] = new Array(n).fill(null);
+    for (let i = 19; i < n; i++) {
+      const slice = closes.slice(i - 19, i + 1);
+      const mean = slice.reduce((a, b) => a + b, 0) / 20;
+      const variance = slice.reduce((s, v) => s + (v - mean) ** 2, 0) / 20;
       const std = Math.sqrt(variance);
-      boll = { upper: mean + 2 * std, middle: mean, lower: mean - 2 * std };
+      bollUpper[i] = mean + 2 * std;
+      bollMid[i] = mean;
+      bollLower[i] = mean - 2 * std;
     }
 
-    set({ indicators: { ma5, ma10, ma20, macd: { diff, dea, bar }, rsi, boll } });
+    // Latest snapshot (scalar)
+    const last = (s: (number | null)[]) => s[n - 1] ?? 0;
+    const lastBar = last(barSeries);
+    const indicators: Indicators = {
+      ma5: last(ma5Series),
+      ma10: last(ma10Series),
+      ma20: last(ma20Series),
+      macd: { diff: last(diffSeries), dea: last(deaSeries), bar: lastBar },
+      rsi: last(rsiSeries),
+      boll: { upper: last(bollUpper), middle: last(bollMid), lower: last(bollLower) },
+    };
+
+    const indicatorSeries: IndicatorSeries = {
+      ma5: ma5Series,
+      ma10: ma10Series,
+      ma20: ma20Series,
+      macd: { diff: diffSeries, dea: deaSeries, bar: barSeries },
+      rsi: rsiSeries,
+      boll: { upper: bollUpper, middle: bollMid, lower: bollLower },
+    };
+
+    set({ indicators, indicatorSeries });
   },
 
   refreshOrderBook: () => {
@@ -1550,6 +1832,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({
       news: [newsItem, ...state.news].slice(0, 30),
       currentQuote: { ...state.currentQuote, price: newPrice, change: newChange, changePercent: newChangePct, timestamp: Date.now() },
+      stockPrices: { ...state.stockPrices, [state.currentQuote.symbol]: newPrice },
     });
 
     if (item.sentiment !== 'neutral') {
@@ -1589,6 +1872,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     set({
       currentQuote: { ...state.currentQuote, price: newPrice, change: newChange, changePercent: newChangePct, timestamp: Date.now() },
+      stockPrices: { ...state.stockPrices, [state.currentQuote.symbol]: newPrice },
       news: [newsItem, ...state.news].slice(0, 30),
     });
 

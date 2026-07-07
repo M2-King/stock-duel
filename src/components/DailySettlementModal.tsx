@@ -11,7 +11,6 @@ export default function DailySettlementModal() {
   if (!settlement) return null;
 
   const isLunch = session === 'lunch';
-  const isClosed = session === 'closed';
   const isUp = settlement.pnl >= 0;
   const priceUp = settlement.close >= settlement.open;
   const priceColor = priceUp ? 'var(--price-up)' : 'var(--price-down)';

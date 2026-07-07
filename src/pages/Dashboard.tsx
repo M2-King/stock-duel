@@ -1,11 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useGameStore } from '../store/gameStore';
+import { useGameStore, SPEED_PRESETS } from '../store/gameStore';
 import './Dashboard.css';
 
 export default function Dashboard() {
-  const { currentQuote, klines, holdings, news, players, currentTick, timelineData } = useGameStore();
+  const {
+    currentQuote, klines, holdings, news, currentTick, timelineData,
+    cash, leverage, setLeverage, placeOrder, purchaseInsiderInfo, showToast,
+    gameStatus, totalTradeCount, indicatorSeries, simulation, allStocks,
+    currentDay, maxDays, maxTicksPerDay,
+    totalAssets, todayPnl, todayPnlPercent, setSpeed,
+  } = useGameStore();
 
   const [period, setPeriod] = useState<'1D' | '1W' | '1M' | '3M' | '1Y' | 'ALL'>('1D');
+  const [orderType, setOrderType] = useState<'market' | 'limit' | 'stop'>('market');
+  const [shares, setShares] = useState(500);
+  const [lastOrderResult, setLastOrderResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
   // Map period -> number of mock candles to use as history baseline
   const periodCount: Record<string, number> = { '1D': 0, '1W': 30, '1M': 60, '3M': 90, '1Y': 120, 'ALL': 180 };
@@ -17,15 +26,13 @@ export default function Dashboard() {
     [currentQuote.symbol, period, mockCount]
   );
 
-  // Calculate total portfolio stats
-  const totalAssets = holdings.reduce((sum, h) => sum + h.shares * h.marketPrice, 0);
-  const totalCost = holdings.reduce((sum, h) => sum + h.shares * h.avgPrice, 0);
-  const totalPnL = totalAssets - totalCost;
-  const totalPnLPercent = totalCost > 0 ? (totalPnL / totalCost) * 100 : 0;
+  // 统一读取 store 的资产/盈亏，避免各页面各自硬编码或用不同基准。
+  // totalAssets = cash + Σ(持仓市值)；P&L 以 initialAssets(1亿) 为基准。
+  const positionValue = holdings.reduce((sum, h) => sum + h.shares * h.marketPrice, 0);
+  const totalPnL = todayPnl;
+  const totalPnLPercent = todayPnlPercent;
+  const currentStock = allStocks.find((s) => s.symbol === currentQuote.symbol);
 
-  const cash = 82292000 - totalAssets;
-  const portfolioPercent = totalAssets / (cash + totalAssets) * 100;
-  
   // Mock market overview data
   const indices = [
     { name: 'S&P 500', value: '5,212.34', change: '+0.12%', up: true },
@@ -88,8 +95,8 @@ export default function Dashboard() {
         <div className="dashboard-card chart-card">
           <div className="chart-header">
             <div className="chart-title-wrap">
-              <div className="chart-symbol">QDN</div>
-              <div className="chart-name">Quantum Dynamics</div>
+              <div className="chart-symbol">{currentQuote.symbol}</div>
+              <div className="chart-name">{currentQuote.name}</div>
             </div>
             <div className="chart-tags">
               <span className="badge">Tech</span>
@@ -125,7 +132,7 @@ export default function Dashboard() {
               </div>
               <div className="stat-pair">
                 <span className="stat-label">PE</span>
-                <span className="stat-value mono">45.2x</span>
+                <span className="stat-value mono">{currentStock ? currentStock.pe.toFixed(1) : '--'}x</span>
               </div>
             </div>
           </div>
@@ -149,38 +156,113 @@ export default function Dashboard() {
               intradayPoints={isIntraday ? intradayData : null}
               currentPrice={currentQuote.price}
               period={period}
-              currentTick={currentTick}
+              indicatorSeries={indicatorSeries}
+              seriesOffset={isIntraday ? 0 : mockCandles.length}
             />
           </div>
         </div>
         
-        {/* Market Closed Card */}
-        <div className="dashboard-card closed-card">
-          <div className="closed-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <circle cx="12" cy="12" r="10"/>
-              <line x1="12" y1="8" x2="12" y2="12"/>
-              <line x1="12" y1="16" x2="12.01" y2="16"/>
-            </svg>
-          </div>
-          <div className="closed-title">Market Closed</div>
-          <div className="closed-subtitle">Final Net Worth</div>
-          <div className="closed-amount mono">$82,292</div>
-          <button className="play-again-btn">Play Again</button>
-          
-          <div className="closed-stats">
-            <div className="closed-stat-item">
-              <div className="closed-stat-label">Performance</div>
-              <div className="closed-stat-bar">
-                <div className="closed-stat-fill" style={{ width: '68%' }}></div>
+        {/* Market Closed / Live Match Card */}
+        {gameStatus === 'playing' ? (
+          <div className="dashboard-card live-match-card">
+            <div className="card-header-bar">
+              <span className="card-header-title">⚡ Live Match</span>
+              <span className="card-header-action live">
+                <span className="live-dot" /> {simulation.session === 'morning' ? 'AM Session' : simulation.session === 'afternoon' ? 'PM Session' : simulation.session}
+              </span>
+            </div>
+            <div className="live-match-row">
+              <span className="live-label">Day</span>
+              <span className="live-value mono">{currentDay} / {maxDays}</span>
+            </div>
+            <div className="live-match-row">
+              <span className="live-label">Tick</span>
+              <span className="live-value mono">{(simulation.session === 'afternoon' ? 60 : 0) + currentTick} / {maxTicksPerDay}</span>
+            </div>
+            <div className="live-match-row big">
+              <span className="live-label">Total Assets</span>
+              <span className="live-value mono">${totalAssets.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+            </div>
+            <div className="live-match-row big">
+              <span className="live-label">P&amp;L</span>
+              <span className={`live-value mono ${totalPnL >= 0 ? 'up' : 'down'}`}>
+                {totalPnL >= 0 ? '+' : ''}${Math.round(totalPnL).toLocaleString()} ({totalPnLPercent >= 0 ? '+' : ''}{totalPnLPercent.toFixed(2)}%)
+              </span>
+            </div>
+            <div className="live-match-row">
+              <span className="live-label">Trades</span>
+              <span className="live-value mono">{totalTradeCount}</span>
+            </div>
+            <div className="live-match-row">
+              <span className="live-label">Cash</span>
+              <span className="live-value mono">${cash.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+            </div>
+            <div className="speed-control" style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6 }}>
+                对局速度 · 一天现实时长
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {SPEED_PRESETS.map((p) => {
+                  const active = Math.abs(simulation.speed - p.speed) < 0.01;
+                  return (
+                    <button
+                      key={p.label}
+                      className={`speed-btn ${active ? 'active' : ''}`}
+                      title={p.label}
+                      onClick={() => setSpeed(p.speed)}
+                      style={{
+                        flex: '1 1 40%',
+                        padding: '6px 0',
+                        background: active ? 'var(--accent-blue)' : 'var(--bg-tertiary)',
+                        color: active ? '#fff' : 'var(--text-secondary)',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: 4,
+                        cursor: 'pointer',
+                        fontSize: 11,
+                        fontWeight: 600,
+                      }}
+                    >
+                      {p.minutesPerDay ? `${p.minutesPerDay} 分钟` : '快进 ⏩'}
+                    </button>
+                  );
+                })}
               </div>
             </div>
-            <div className="closed-stat-item">
-              <div className="closed-stat-label">Rank</div>
-              <div className="closed-stat-value mono">#247</div>
+          </div>
+        ) : (
+          <div className="dashboard-card closed-card">
+            <div className="closed-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="8" x2="12" y2="12"/>
+                <line x1="12" y1="16" x2="12.01" y2="16"/>
+              </svg>
+            </div>
+            <div className="closed-title">Market Closed</div>
+            <div className="closed-subtitle">Final Net Worth</div>
+            <div className="closed-amount mono">${totalAssets.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+            <button className="play-again-btn" onClick={() => {
+              const st = useGameStore.getState();
+              st.restartMatch();
+              st.startMatch();
+            }}>
+              {gameStatus === 'settlement' ? '再来一局' : 'Play Again'}
+            </button>
+
+            <div className="closed-stats">
+              <div className="closed-stat-item">
+                <div className="closed-stat-label">Return</div>
+                <div className={`closed-stat-value mono ${totalPnL >= 0 ? 'up' : 'down'}`}>
+                  {totalPnL >= 0 ? '+' : ''}{totalPnLPercent.toFixed(2)}%
+                </div>
+              </div>
+              <div className="closed-stat-item">
+                <div className="closed-stat-label">Trades</div>
+                <div className="closed-stat-value mono">{totalTradeCount}</div>
+              </div>
             </div>
           </div>
-        </div>
+        )}
         
         {/* Live News Card */}
         <div className="dashboard-card news-card">
@@ -218,38 +300,48 @@ export default function Dashboard() {
           <div className="portfolio-summary">
             <div className="portfolio-line">
               <span className="portfolio-label">Total Net Worth</span>
-              <span className="portfolio-value mono">$82,292</span>
+              <span className="portfolio-value mono">${totalAssets.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
             </div>
             <div className="portfolio-line">
-              <span className="portfolio-label-small">Today's P&L</span>
-              <div className="portfolio-stats">
-                <span className="up">+$8,18<b>9</b></span>
-                <span className="up">+$3,292 (4.15%)</span>
-              </div>
-              <span className="portfolio-stats-right">
-                <span className="up">+$3,130 (2.65%)</span>
+              <span className="portfolio-label-small">Total P&L</span>
+              <span className={`mono ${totalPnL >= 0 ? 'up' : 'down'}`} style={{ fontWeight: 600 }}>
+                {totalPnL >= 0 ? '+' : ''}${Math.round(totalPnL).toLocaleString()} ({totalPnLPercent >= 0 ? '+' : ''}{totalPnLPercent.toFixed(2)}%)
               </span>
             </div>
           </div>
-          
+
           <div className="donut-chart">
-            <DonutChart 
-              data={[
-                { name: 'QDN', value: 45.2, color: 'var(--text-primary)' },
-                { name: 'AAPL', value: 23.1, color: 'var(--text-secondary)' },
-                { name: 'TSLA', value: 15.3, color: 'var(--text-tertiary)' },
-                { name: 'NVDA', value: 10.2, color: 'var(--text-muted)' },
-                { name: 'CASH', value: 6.2, color: 'var(--text-disabled)' },
-              ]}
+            <DonutChart
+              data={(() => {
+                const total = Math.max(1, positionValue + cash);
+                const items = holdings.map((h) => ({
+                  name: h.symbol,
+                  value: ((h.shares * h.marketPrice) / total) * 100,
+                  color: 'var(--text-primary)',
+                }));
+                items.push({ name: 'CASH', value: (cash / total) * 100, color: 'var(--text-muted)' });
+                return items;
+              })()}
             />
           </div>
           
           <div className="portfolio-legend">
-            <div className="legend-item"><span className="legend-dot" style={{ background: 'var(--text-primary)' }}></span>QDN <span className="legend-percent">45.2%</span></div>
-            <div className="legend-item"><span className="legend-dot" style={{ background: 'var(--text-secondary)' }}></span>AAPL <span className="legend-percent">23.1%</span></div>
-            <div className="legend-item"><span className="legend-dot" style={{ background: 'var(--text-tertiary)' }}></span>TSLA <span className="legend-percent">15.3%</span></div>
-            <div className="legend-item"><span className="legend-dot" style={{ background: 'var(--text-muted)' }}></span>NVDA <span className="legend-percent">10.2%</span></div>
-            <div className="legend-item"><span className="legend-dot" style={{ background: 'var(--text-disabled)' }}></span>CASH <span className="legend-percent">6.2%</span></div>
+            {(() => {
+              const total = Math.max(1, positionValue + cash);
+              const colors = ['var(--text-primary)', 'var(--text-secondary)', 'var(--text-tertiary)', 'var(--text-muted)'];
+              const items = holdings.map((h, i) => ({
+                name: h.symbol,
+                pct: ((h.shares * h.marketPrice) / total) * 100,
+                color: colors[i % colors.length],
+              }));
+              items.push({ name: 'CASH', pct: (cash / total) * 100, color: 'var(--text-disabled)' });
+              return items.map((it) => (
+                <div key={it.name} className="legend-item">
+                  <span className="legend-dot" style={{ background: it.color }}></span>
+                  {it.name} <span className="legend-percent">{it.pct.toFixed(1)}%</span>
+                </div>
+              ));
+            })()}
           </div>
         </div>
         
@@ -306,57 +398,143 @@ export default function Dashboard() {
             <span className="card-header-title">⚡ Trading Desk</span>
             <span className="card-header-action">Leverage ⓘ</span>
           </div>
-          
+
           <div className="leverage-display">
             <div className="leverage-info">
               <div className="leverage-label">Buying Power</div>
-              <div className="leverage-value mono">$82,292</div>
+              <div className="leverage-value mono">${(cash * leverage).toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
             </div>
             <div className="leverage-info">
               <div className="leverage-label">Unrealized P&L</div>
-              <div className="leverage-value up mono">+$2,130 (2.65%)</div>
+              <div className={`leverage-value mono ${totalPnL >= 0 ? 'up' : 'down'}`}>
+                {totalPnL >= 0 ? '+' : ''}${Math.round(totalPnL).toLocaleString()} ({totalPnLPercent.toFixed(2)}%)
+              </div>
             </div>
           </div>
-          
+
           <div className="leverage-selector">
             {[1, 2, 5, 10].map((lev) => (
-              <button key={lev} className={`leverage-btn ${lev === 2 ? 'active' : ''}`}>
+              <button
+                key={lev}
+                className={`leverage-btn ${lev === leverage ? 'active' : ''}`}
+                onClick={() => { setLeverage(lev); showToast(`杠杆已切换至 ${lev}x`, 'info'); }}
+              >
                 {lev}x
               </button>
             ))}
           </div>
-          
+
           <div className="order-type-selector">
             <span className="selector-label">Order Type</span>
             <div className="selector-group">
-              <button className="selector-btn active">Market</button>
-              <button className="selector-btn">Limit</button>
-              <button className="selector-btn">Stop</button>
+              {(['market', 'limit', 'stop'] as const).map((t) => (
+                <button
+                  key={t}
+                  className={`selector-btn ${orderType === t ? 'active' : ''}`}
+                  onClick={() => { setOrderType(t); showToast(`订单类型: ${t.toUpperCase()}`, 'info'); }}
+                >
+                  {t === 'market' ? 'Market' : t === 'limit' ? 'Limit' : 'Stop'}
+                </button>
+              ))}
             </div>
           </div>
-          
+
           <div className="shares-control">
             <span className="selector-label">Shares</span>
             <div className="shares-input-wrap">
-              <span className="shares-symbol">$600</span>
-              <span className="shares-value">500</span>
-              <span className="shares-symbol">10</span>
-              <span className="shares-symbol">100</span>
-              <span className="shares-symbol">500</span>
+              <span className="shares-symbol">${(shares * currentQuote.price).toFixed(0)}</span>
+              <input
+                type="number"
+                min={1}
+                step={100}
+                value={shares}
+                onChange={(e) => setShares(Math.max(1, Math.floor(Number(e.target.value) || 0)))}
+                className="shares-value-input mono"
+                style={{ width: 80 }}
+              />
+              {[10, 100, 500].map((q) => (
+                <button key={q} className="shares-quick" onClick={() => setShares(q)}>{q}</button>
+              ))}
             </div>
           </div>
-          
+
+          {lastOrderResult && (
+            <div
+              className="order-feedback"
+              style={{
+                fontSize: 12,
+                padding: '6px 10px',
+                marginBottom: 8,
+                background: lastOrderResult.ok ? 'rgba(34,197,94,0.12)' : 'rgba(220,38,38,0.12)',
+                color: lastOrderResult.ok ? '#22c55e' : '#ef4444',
+                border: `1px solid ${lastOrderResult.ok ? 'rgba(34,197,94,0.3)' : 'rgba(220,38,38,0.3)'}`,
+                borderRadius: 6,
+              }}
+            >
+              {lastOrderResult.msg}
+            </div>
+          )}
+
           <div className="action-buttons">
-            <button className="action-btn buy-btn">Buy QDN</button>
-            <button className="action-btn sell-btn">Sell QDN</button>
+            <button
+              className="action-btn buy-btn"
+              onClick={() => {
+                const result = placeOrder({
+                  symbol: currentQuote.symbol,
+                  type: orderType,
+                  side: 'buy',
+                  price: currentQuote.price,
+                  quantity: shares,
+                  status: 'filled',
+                });
+                setLastOrderResult({ ok: result.success, msg: result.success ? `买入 ${shares} 股 ${currentQuote.symbol} @ ¥${currentQuote.price.toFixed(2)}` : (result.error || '买入失败') });
+              }}
+            >
+              Buy {currentQuote.symbol}
+            </button>
+            <button
+              className="action-btn sell-btn"
+              onClick={() => {
+                const result = placeOrder({
+                  symbol: currentQuote.symbol,
+                  type: orderType,
+                  side: 'sell',
+                  price: currentQuote.price,
+                  quantity: shares,
+                  status: 'filled',
+                });
+                setLastOrderResult({ ok: result.success, msg: result.success ? `卖出 ${shares} 股 ${currentQuote.symbol} @ ¥${currentQuote.price.toFixed(2)}` : (result.error || '卖出失败') });
+              }}
+            >
+              Sell {currentQuote.symbol}
+            </button>
           </div>
-          
+
           <div className="insider-info">
             <div className="insider-header">
               <span className="insider-title">Insider Info</span>
               <span className="insider-cost mono">$2,000</span>
             </div>
             <p className="insider-desc">Purchase insider information with potential risks.</p>
+            <button
+              className="insider-btn"
+              disabled={cash < 2000 || gameStatus !== 'playing'}
+              onClick={() => {
+                const r = purchaseInsiderInfo('manual', 2000);
+                if (r.success) {
+                  setLastOrderResult({ ok: true, msg: `${r.trustworthy ? '真' : '假'}消息: ${r.tip}` });
+                } else {
+                  setLastOrderResult({ ok: false, msg: r.error || '购买失败' });
+                }
+              }}
+            >
+              {gameStatus !== 'playing' ? '非交易时段' : cash < 2000 ? '余额不足' : 'Purchase Insider Info ($2,000)'}
+            </button>
+          </div>
+
+          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-secondary)' }}>
+            今日累计交易: <span className="mono" style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{totalTradeCount}</span>
+            {gameStatus !== 'playing' && <span style={{ color: '#fb923c', marginLeft: 8 }}>· 非交易时段</span>}
           </div>
         </div>
       </div>
@@ -483,10 +661,14 @@ function generateMockCandles(count: number, basePrice: number, seedKey: string =
 
 /* ============== Candlestick / Intraday Chart ============== */
 function CandlestickChart({
-  data, lineData, currentPrice, period, intradayPoints, currentTick,
+  data, lineData, currentPrice, period, intradayPoints, indicatorSeries, seriesOffset = 0,
 }: {
   data: any[]; lineData: any[] | null; currentPrice: number; period: string;
-  intradayPoints: number[] | null; currentTick: number;
+  intradayPoints: number[] | null;
+  indicatorSeries?: import('../store/gameStore').IndicatorSeries | null;
+  // 指标序列(基于真实 klines)在合并后的 data(mock 历史 + klines) 中的起始索引，
+  // 用于把 MA/BOLL/MACD/RSI 对齐到 K 线所在的正确横坐标。
+  seriesOffset?: number;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -512,15 +694,14 @@ function CandlestickChart({
   const innerW = Math.max(0, width - padding.left - padding.right);
   const innerH = Math.max(0, height - padding.top - padding.bottom);
 
-  // ============== Intraday branch (固定窗口：240 个 tick = 一个完整 A 股交易日) ==============
+  // ============== Intraday branch ==============
+  // Time slot model: 1 day = 120 slots (60 morning + 60 afternoon, lunch break collapses)
+  //   Slot 0     = 09:30
+  //   Slot 60    = 11:30 (morning close) === 13:00 (afternoon open) — visual jump
+  //   Slot 120   = 15:00 (afternoon close)
   if (intradayPoints && intradayPoints.length > 0) {
-    const WINDOW = 240; // A 股分时一交易日容量 (相当于 1 个完整交易日)
+    const WINDOW = 120;
     const allPoints = intradayPoints;
-
-    // 视角固定: 第一个点永远在 padding.left，最后一个点永远在 padding.left + innerW
-    // n < WINDOW: 只画前 n 个点（点密度稀疏，右侧留空）
-    // n >= WINDOW: 取最后 WINDOW 个点（老点被替换出窗口，但位置不变）
-    // 槽位宽 = innerW / (WINDOW - 1) — 固定
     const points = allPoints.length >= WINDOW ? allPoints.slice(-WINDOW) : allPoints;
     const n = points.length;
 
@@ -554,10 +735,11 @@ function CandlestickChart({
     // 当前 tick 游标 (类似分时右上角的"现在"竖线)
     const cursorX = lastDataX;
 
-    // X 轴时间标签：按 n 的比例分布（时间跟着"线在走"的进度走）
+    // X 轴时间标签 (按 WINDOW=120 槽位: 60 上午 + 60 下午，午休在槽位 60 处)
     const timeLabels = [
       { ratio: 0, label: '09:30' },
-      { ratio: 0.25, label: '11:30' },
+      { ratio: 0.25, label: '10:30' },
+      { ratio: 0.5, label: '11:30' },
       { ratio: 0.5, label: '13:00' },
       { ratio: 0.75, label: '14:00' },
       { ratio: 1, label: '15:00' },
@@ -642,11 +824,45 @@ function CandlestickChart({
             </text>
           ))}
 
-          {/* X 轴时间刻度 (随 n 比例分布：09:30 永远在最左，15:00 永远在最右) */}
+          {/* 午休分界 (槽位 60 = 11:30/13:00 视觉分界) */}
+          {(() => {
+            const x = padding.left + 0.5 * innerW;
+            return (
+              <g>
+                <line
+                  x1={x} x2={x}
+                  y1={padding.top} y2={padding.top + innerH}
+                  stroke="rgba(255, 255, 255, 0.18)"
+                  strokeWidth={1}
+                  strokeDasharray="2 4"
+                />
+                <rect
+                  x={x - 32} y={padding.top + 4}
+                  width={64} height={18}
+                  fill="rgba(255, 255, 255, 0.05)"
+                  stroke="rgba(255, 255, 255, 0.1)"
+                  rx={3}
+                />
+                <text
+                  x={x} y={padding.top + 16}
+                  fill="rgba(255, 255, 255, 0.55)"
+                  fontSize={9}
+                  fontFamily="ui-monospace, monospace"
+                  textAnchor="middle"
+                >
+                  午休 11:30-13:00
+                </text>
+              </g>
+            );
+          })()}
+
+          {/* X 轴时间刻度 */}
           {timeLabels.map((lbl, i) => {
             const x = padding.left + lbl.ratio * innerW;
+            // 13:00 标签略向右偏移避免与 11:30 重叠
+            const dx = lbl.label === '13:00' ? 16 : 0;
             return (
-              <text key={`xl-${i}`} x={x} y={height - 8}
+              <text key={`xl-${i}`} x={x + dx} y={height - 8}
                 fill="rgba(255, 255, 255, 0.4)" fontSize={10}
                 fontFamily="ui-monospace, monospace" textAnchor="middle">
                 {lbl.label}
@@ -659,28 +875,56 @@ function CandlestickChart({
   }
 
   // ============== Candle branch (1W+) ==============
+  // 分层布局: 上 60% K线+MA+BOLL | 中 20% MACD | 下 20% RSI
+  const showOverlays = !!indicatorSeries && data.length > 0;
+  const mainH = showOverlays ? Math.floor(innerH * 0.6) : innerH;
+  const macdH = showOverlays ? Math.floor(innerH * 0.2) : 0;
+  const rsiH = showOverlays ? innerH - mainH - macdH - 4 : 0;
+
+  const mainTop = padding.top;
+  const macdTop = mainTop + mainH + 2;
+  const rsiTop = macdTop + macdH + 2;
+
   const allValues = data.flatMap(d => [d.y[0], d.y[1], d.y[2], d.y[3]]);
   let minVal = Math.min(...allValues, currentPrice);
   let maxVal = Math.max(...allValues, currentPrice);
+  if (showOverlays && indicatorSeries) {
+    indicatorSeries.boll.upper.forEach((v) => { if (v !== null) maxVal = Math.max(maxVal, v); });
+    indicatorSeries.boll.lower.forEach((v) => { if (v !== null) minVal = Math.min(minVal, v); });
+  }
   const span = maxVal - minVal || 1;
   minVal -= span * 0.05;
   maxVal += span * 0.05;
   const range = maxVal - minVal;
 
   const xScale = (i: number) => padding.left + (data.length === 1 ? innerW / 2 : (i / (data.length - 1)) * innerW);
-  const yScale = (v: number) => padding.top + (1 - (v - minVal) / range) * innerH;
+  const yScale = (v: number) => mainTop + (1 - (v - minVal) / range) * mainH;
 
   const slotW = innerW / Math.max(data.length, 1);
   const candleW = Math.max(2, Math.min(slotW * 0.72, 16));
 
   const gridLevels = [0.1, 0.3, 0.5, 0.7, 0.9].map(t => ({
-    y: padding.top + t * innerH,
+    y: mainTop + t * mainH,
     price: maxVal - t * range,
   }));
 
   const currentY = yScale(currentPrice);
   const currentUp = currentPrice >= (data[0]?.y?.[0] ?? currentPrice);
   const currentColor = currentUp ? 'var(--price-up)' : 'var(--price-down)';
+
+  // Helper: build line path from a series aligned to data
+  const buildPath = (series: (number | null)[]) => {
+    let started = false;
+    let path = '';
+    series.forEach((v, i) => {
+      if (v === null) return;
+      const x = xScale(i + seriesOffset);
+      const y = yScale(v);
+      path += `${started ? ' L' : 'M'} ${x.toFixed(1)} ${y.toFixed(1)}`;
+      started = true;
+    });
+    return path;
+  };
 
   return (
     <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'relative' }}>
@@ -699,7 +943,7 @@ function CandlestickChart({
 
         {lineData && lineData.length > 1 && (() => {
           const path = lineData.map((d, i) => `${i === 0 ? 'M' : 'L'} ${xScale(d.x)} ${yScale(d.y)}`).join(' ');
-          const area = `${path} L ${xScale(lineData.length - 1)} ${padding.top + innerH} L ${xScale(0)} ${padding.top + innerH} Z`;
+          const area = `${path} L ${xScale(lineData.length - 1)} ${mainTop + mainH} L ${xScale(0)} ${mainTop + mainH} Z`;
           return (
             <g>
               <path d={area} fill="url(#chart-area-grad)" />
@@ -708,6 +952,24 @@ function CandlestickChart({
             </g>
           );
         })()}
+
+        {/* BOLL bands */}
+        {showOverlays && indicatorSeries && (
+          <g opacity={0.55}>
+            <path d={buildPath(indicatorSeries.boll.upper)} fill="none" stroke="#a78bfa" strokeWidth={0.8} strokeDasharray="2 2" />
+            <path d={buildPath(indicatorSeries.boll.middle)} fill="none" stroke="#a78bfa" strokeWidth={1} />
+            <path d={buildPath(indicatorSeries.boll.lower)} fill="none" stroke="#a78bfa" strokeWidth={0.8} strokeDasharray="2 2" />
+          </g>
+        )}
+
+        {/* MA lines */}
+        {showOverlays && indicatorSeries && (
+          <g>
+            <path d={buildPath(indicatorSeries.ma5)} fill="none" stroke="#fbbf24" strokeWidth={1.1} />
+            <path d={buildPath(indicatorSeries.ma10)} fill="none" stroke="#e5e7eb" strokeWidth={1.1} />
+            <path d={buildPath(indicatorSeries.ma20)} fill="none" stroke="#c084fc" strokeWidth={1.1} />
+          </g>
+        )}
 
         {data.map((d, i) => {
           const x = xScale(d.x);
@@ -727,7 +989,7 @@ function CandlestickChart({
           );
         })}
 
-        {currentPrice > 0 && currentY >= padding.top && currentY <= padding.top + innerH && (
+        {currentPrice > 0 && currentY >= mainTop && currentY <= mainTop + mainH && (
           <g>
             <line x1={padding.left} x2={width - padding.right} y1={currentY} y2={currentY}
               stroke={currentColor} strokeWidth={0.8} strokeDasharray="3 3" opacity={0.7} />
@@ -741,6 +1003,17 @@ function CandlestickChart({
           </g>
         )}
 
+        {/* MA legend top-left of main */}
+        {showOverlays && (
+          <g>
+            <rect x={padding.left + 4} y={mainTop + 4} width={130} height={42}
+              fill="rgba(0,0,0,0.35)" rx={3} />
+            <text x={padding.left + 10} y={mainTop + 18} fill="#fbbf24" fontSize={10} fontFamily="ui-monospace, monospace">MA5 {indicatorSeries?.ma5[indicatorSeries.ma5.length - 1]?.toFixed(2) ?? '--'}</text>
+            <text x={padding.left + 10} y={mainTop + 30} fill="#e5e7eb" fontSize={10} fontFamily="ui-monospace, monospace">MA10 {indicatorSeries?.ma10[indicatorSeries.ma10.length - 1]?.toFixed(2) ?? '--'}</text>
+            <text x={padding.left + 10} y={mainTop + 42} fill="#c084fc" fontSize={10} fontFamily="ui-monospace, monospace">MA20 {indicatorSeries?.ma20[indicatorSeries.ma20.length - 1]?.toFixed(2) ?? '--'}</text>
+          </g>
+        )}
+
         {gridLevels.map((g, i) => (
           <text key={`yl-${i}`} x={width - padding.right + 4} y={g.y + 4}
             fill="rgba(255, 255, 255, 0.45)" fontSize={10}
@@ -748,6 +1021,78 @@ function CandlestickChart({
             {g.price.toFixed(2)}
           </text>
         ))}
+
+        {/* MACD sub-pane */}
+        {showOverlays && indicatorSeries && (() => {
+          const diffS = indicatorSeries.macd.diff;
+          const deaS = indicatorSeries.macd.dea;
+          const barS = indicatorSeries.macd.bar;
+          const all = [...diffS, ...deaS, ...barS].filter((v): v is number => v !== null);
+          if (all.length === 0) return null;
+          const maxAbs = Math.max(0.01, ...all.map((v) => Math.abs(v)));
+          const yMid = macdTop + macdH / 2;
+          const yScaleMacd = (v: number) => yMid - (v / maxAbs) * (macdH / 2 - 2);
+          return (
+            <g>
+              <line x1={padding.left} x2={width - padding.right} y1={yMid} y2={yMid} stroke="rgba(255,255,255,0.18)" strokeDasharray="2 2" />
+              <text x={padding.left + 4} y={macdTop + 11} fill="rgba(255,255,255,0.55)" fontSize={9} fontFamily="ui-monospace, monospace">MACD</text>
+              {barS.map((v, i) => {
+                if (v === null) return null;
+                const x = xScale(i + seriesOffset);
+                const yTop = yScaleMacd(v);
+                const yBot = yMid;
+                const h = Math.max(1, Math.abs(yBot - yTop));
+                return (
+                  <rect key={`bar-${i}`} x={x - candleW / 2} y={Math.min(yTop, yBot)} width={candleW} height={h}
+                    fill={v >= 0 ? 'var(--price-up)' : 'var(--price-down)'} opacity={0.7} />
+                );
+              })}
+              <path d={(() => {
+                let s = ''; let started = false;
+                diffS.forEach((v, i) => {
+                  if (v === null) return;
+                  s += `${started ? ' L' : 'M'} ${xScale(i + seriesOffset).toFixed(1)} ${yScaleMacd(v).toFixed(1)}`;
+                  started = true;
+                });
+                return s;
+              })()} fill="none" stroke="#fbbf24" strokeWidth={1} />
+              <path d={(() => {
+                let s = ''; let started = false;
+                deaS.forEach((v, i) => {
+                  if (v === null) return;
+                  s += `${started ? ' L' : 'M'} ${xScale(i + seriesOffset).toFixed(1)} ${yScaleMacd(v).toFixed(1)}`;
+                  started = true;
+                });
+                return s;
+              })()} fill="none" stroke="#60a5fa" strokeWidth={1} />
+            </g>
+          );
+        })()}
+
+        {/* RSI sub-pane */}
+        {showOverlays && indicatorSeries && (() => {
+          const rsiS = indicatorSeries.rsi;
+          if (rsiS.length === 0) return null;
+          const yRsi = (v: number) => rsiTop + (1 - v / 100) * rsiH;
+          return (
+            <g>
+              <line x1={padding.left} x2={width - padding.right} y1={yRsi(70)} y2={yRsi(70)} stroke="rgba(220,38,38,0.5)" strokeDasharray="2 2" strokeWidth={0.8} />
+              <line x1={padding.left} x2={width - padding.right} y1={yRsi(30)} y2={yRsi(30)} stroke="rgba(22,163,74,0.5)" strokeDasharray="2 2" strokeWidth={0.8} />
+              <text x={padding.left + 4} y={rsiTop + 11} fill="rgba(255,255,255,0.55)" fontSize={9} fontFamily="ui-monospace, monospace">RSI</text>
+              <text x={width - padding.right + 4} y={yRsi(70) + 3} fill="rgba(255,255,255,0.4)" fontSize={9} fontFamily="ui-monospace, monospace">70</text>
+              <text x={width - padding.right + 4} y={yRsi(30) + 3} fill="rgba(255,255,255,0.4)" fontSize={9} fontFamily="ui-monospace, monospace">30</text>
+              <path d={(() => {
+                let s = ''; let started = false;
+                rsiS.forEach((v, i) => {
+                  if (v === null) return;
+                  s += `${started ? ' L' : 'M'} ${xScale(i + seriesOffset).toFixed(1)} ${yRsi(v).toFixed(1)}`;
+                  started = true;
+                });
+                return s;
+              })()} fill="none" stroke="#a78bfa" strokeWidth={1} />
+            </g>
+          );
+        })()}
 
         {(() => {
           const labels = xAxisLabels(period, data.length);

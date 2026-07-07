@@ -5,32 +5,27 @@ import './Portfolio.css';
 type FilterType = 'all' | 'today' | 'winners' | 'losers';
 
 export default function Portfolio() {
-  const { 
-    holdings, 
-    cash, 
-    portfolioTotal, 
-    todayPnl, 
+  const {
+    holdings,
+    cash,
+    totalAssets,
+    todayPnl,
     todayPnlPercent,
     unrealizedPnl,
     orderHistory,
     placeOrder,
     selectSymbol,
     setLeverage,
-    leverage
+    leverage,
+    simulation,
   } = useGameStore();
-  
+
   const [filter, setFilter] = useState<FilterType>('all');
-  
-  const totalAssets = useMemo(() => {
-    return holdings.reduce((sum, h) => sum + h.shares * h.marketPrice, 0) + cash;
-  }, [holdings, cash]);
-  
-  const totalCost = useMemo(() => {
-    return holdings.reduce((sum, h) => sum + h.shares * h.avgPrice, 0);
-  }, [holdings]);
-  
-  const totalPnL = totalAssets - 100000000;
-  const totalPnLPercent = totalPnL / 100000000 * 100;
+
+  // 统一读取 store 的 totalAssets（= cash + Σ持仓市值），P&L 以 initialAssets 为基准。
+  const initialAssets = simulation.initialAssets;
+  const totalPnL = totalAssets - initialAssets;
+  const totalPnLPercent = initialAssets > 0 ? (totalPnL / initialAssets) * 100 : 0;
   
   const filteredHoldings = useMemo(() => {
     let result = [...holdings];

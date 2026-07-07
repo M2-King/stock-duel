@@ -922,3 +922,68 @@
     display: none;
   }
 }
+
+/* Trading Desk interactive styles */
+.shares-value-input {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 13px;
+  outline: none;
+  text-align: center;
+  -moz-appearance: textfield;
+}
+.shares-value-input::-webkit-outer-spin-button,
+.shares-value-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.shares-value-input:focus {
+  border-color: var(--accent-blue);
+  background: var(--bg-elevated);
+}
+
+.shares-quick {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: var(--font-mono);
+}
+.shares-quick:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border-color: var(--accent-blue);
+}
+
+.insider-btn {
+  width: 100%;
+  margin-top: 8px;
+  background: linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.insider-btn:hover {
+  filter: brightness(1.15);
+  transform: translateY(-1px);
+}
+.insider-btn:active {
+  transform: translateY(0);
+}
+.insider-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
