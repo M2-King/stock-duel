@@ -5,7 +5,7 @@ import './News.css';
 type NewsFilter = 'all' | 'verified' | 'unverified' | 'warning';
 
 export default function News() {
-  const { news, role, markNewsRead, purchaseInsiderInfo, cash, bookmarkedNews = [], setBookmarkedNews = () => {} } = useGameStore() as any;
+  const { news, role, markNewsRead, purchaseInsiderInfo, cash } = useGameStore();
   const [filter, setFilter] = useState<NewsFilter>('all');
   const [selected, setSelected] = useState<NewsItem | null>(news[0] || null);
   const [search, setSearch] = useState('');

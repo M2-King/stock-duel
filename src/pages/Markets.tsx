@@ -5,8 +5,14 @@ import './Markets.css';
 type SortKey = 'symbol' | 'price' | 'change' | 'changePercent' | 'volume' | 'pe';
 type SortDir = 'asc' | 'desc';
 
+function tradeSectionForRole(role: 'dealer' | 'retail' | 'regulator', gameStatus: string): 'overview' | 'tools' | 'regulator' {
+  if (gameStatus !== 'playing') return 'overview';
+  if (role === 'regulator') return 'regulator';
+  return 'tools';
+}
+
 export default function Markets() {
-  const { allStocks, indices, selectSymbol, currentQuote } = useGameStore();
+  const { allStocks, indices, selectSymbol, currentQuote, setSection, showToast, role, gameStatus } = useGameStore();
   const [search, setSearch] = useState('');
   const [sector, setSector] = useState('All');
   const [sortKey, setSortKey] = useState<SortKey>('changePercent');
@@ -48,6 +54,9 @@ export default function Markets() {
   
   const handleSelect = (symbol: string) => {
     selectSymbol(symbol);
+    const target = tradeSectionForRole(role, gameStatus);
+    setSection(target);
+    showToast(`已切换到 ${symbol}`, 'success');
   };
   
   const SortIndicator = ({ k }: { k: SortKey }) => (

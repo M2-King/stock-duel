@@ -67,7 +67,7 @@ export default function Tools() {
               {'cost' in tool && (
                 <div className="tool-cost">
                   <span>Cost:</span>
-                  <span className="mono">{tool.cost}</span>
+                  <span className="mono">{(tool as { cost: string }).cost}</span>
                 </div>
               )}
             </div>

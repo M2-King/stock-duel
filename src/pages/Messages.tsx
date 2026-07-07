@@ -3,7 +3,7 @@ import { useGameStore, Message, Role } from '../store/gameStore';
 import './Messages.css';
 
 export default function Messages() {
-  const { messages, role, readMessage, sendMessage } = useGameStore();
+  const { messages, readMessage, sendMessage } = useGameStore();
   const [selected, setSelected] = useState<Message | null>(messages[0] || null);
   const [showCompose, setShowCompose] = useState(false);
   const [composeTo, setComposeTo] = useState<Role>('retail');

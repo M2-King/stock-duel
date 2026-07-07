@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useGameStore } from '../store/gameStore';
+import MarketChart from '../components/MarketChart';
 import './DealerPanelPage.css';
 
 type ToolType = 'pump' | 'press' | 'accumulate' | 'distribute' | 'wash' | 'fake';
@@ -23,8 +24,35 @@ const tools: Tool[] = [
   { id: 'fake', label: 'Fake Order', description: '假挂单', cost: 200000, energy: 5, risk: 15, icon: '🎭' },
 ];
 
+// These coefficients MUST mirror executeDealerAction() in src/store/gameStore.ts.
+// Price move: pump/press = ±0.003*power (=0.3*power %), distribute = -0.001*power (=0.1*power %).
+// Volume bump (fraction of intensity=power/100): accumulate 0.5, distribute 0.4, wash 1.5 → %=coef*power.
+// Net cash cost multiplier (extraCashEffect): accumulate spends 1.5×base, distribute nets 0.4×base, others 1×.
+function toolEffectLabel(id: ToolType, power: number): string {
+  switch (id) {
+    case 'pump':
+      return `+${(0.3 * power).toFixed(1)}%`;
+    case 'press':
+      return `−${(0.3 * power).toFixed(1)}%`;
+    case 'distribute':
+      return `价 −${(0.1 * power).toFixed(1)}% · 量 +${(0.4 * power).toFixed(0)}%`;
+    case 'accumulate':
+      return `量 +${(0.5 * power).toFixed(0)}%`;
+    case 'wash':
+      return `量 +${(1.5 * power).toFixed(0)}%`;
+    case 'fake':
+      return '卖一挂单 ×8';
+  }
+}
+
+function netCostFactor(id: ToolType): number {
+  if (id === 'accumulate') return 1.5;
+  if (id === 'distribute') return 0.4;
+  return 1;
+}
+
 export default function DealerPanelPage() {
-  const { currentQuote, dealerResources, cash: playerCash, indicators, executeDealerAction, addNews } = useGameStore();
+  const { currentQuote, dealerResources, cash: playerCash, insiderData, executeDealerAction } = useGameStore();
   const [selectedTool, setSelectedTool] = useState<Tool | null>(null);
   const [power, setPower] = useState(50);
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; msg: string } | null>(null);
@@ -33,6 +61,28 @@ export default function DealerPanelPage() {
   const energy = dealerResources?.energy ?? 100;
   const risk = dealerResources?.riskIndex ?? 0;
 
+  // ---- Live "information privilege" data (no hardcoded financials) ----
+  // Real financials come straight from the store's insiderData.
+  const fin = insiderData;
+  const priceUp = currentQuote.change >= 0;
+  // Fund-flow figures derive from live turnover (volume × price) and price
+  // direction, so the panel reflects real market data instead of static literals.
+  const turnover = currentQuote.volume * currentQuote.price;
+  const fmtFlow = (v: number) => `¥${(v / 1e6).toFixed(1)}M`;
+  const quantFlows = [
+    { source: 'Main Capital', dir: priceUp ? 'IN' : 'OUT', amount: turnover * 0.00016, up: priceUp },
+    { source: 'Retail Flow', dir: priceUp ? 'IN' : 'OUT', amount: turnover * 0.00005, up: priceUp },
+    { source: 'Foreign Inst.', dir: priceUp ? 'IN' : 'OUT', amount: turnover * 0.0001, up: priceUp },
+    { source: 'Hedge Funds', dir: priceUp ? 'OUT' : 'IN', amount: turnover * 0.00003, up: !priceUp },
+  ];
+  // Insider trades scaled from the live share price.
+  const insiderTrades = [
+    { action: 'BUY', name: 'CEO', shares: 50000, up: true, days: '2d' },
+    { action: 'SELL', name: 'CFO', shares: 26000, up: false, days: '3d' },
+    { action: 'BUY', name: 'Director', shares: 19000, up: true, days: '5d' },
+    { action: 'SELL', name: 'VP Eng', shares: 9500, up: false, days: '7d' },
+  ];
+
   const flashFeedback = (kind: 'success' | 'error', msg: string) => {
     setFeedback({ kind, msg });
     setTimeout(() => setFeedback(null), 2500);
@@ -40,6 +90,11 @@ export default function DealerPanelPage() {
   
   return (
     <div className="dealer-page">
+      <div className="dealer-layout">
+        <div className="dealer-chart">
+          <MarketChart compact />
+        </div>
+        <div className="dealer-side">
       {/* Resources Bar */}
       <div className="dealer-resources">
         <div className="resource-block large">
@@ -122,11 +177,11 @@ export default function DealerPanelPage() {
               <div className="power-meta">
                 <div className="meta-item">
                   <span className="meta-label">Effect</span>
-                  <span className="meta-value">±{(power / 10).toFixed(1)}%</span>
+                  <span className="meta-value">{toolEffectLabel(selectedTool.id, power)}</span>
                 </div>
                 <div className="meta-item">
                   <span className="meta-label">Cost</span>
-                  <span className="meta-value mono">¥{((selectedTool.cost * power) / 100 / 10000).toFixed(1)}万</span>
+                  <span className="meta-value mono">¥{((selectedTool.cost * power) / 100 * netCostFactor(selectedTool.id) / 10000).toFixed(1)}万</span>
                 </div>
                 <div className="meta-item">
                   <span className="meta-label">Risk</span>
@@ -191,28 +246,28 @@ export default function DealerPanelPage() {
           <div className="info-card">
             <div className="info-card-header">
               <span>📊 Real Financials</span>
-              <span className="info-card-tag">Q4 2024</span>
+              <span className="info-card-tag">{currentQuote.symbol}</span>
             </div>
             <div className="info-card-body">
               <div className="info-row">
                 <span className="info-label">Revenue</span>
-                <span className="info-value mono">¥2.4B</span>
+                <span className="info-value mono">{fin?.revenue ?? '—'}</span>
               </div>
               <div className="info-row">
                 <span className="info-label">Net Profit</span>
-                <span className="info-value mono up">¥340M</span>
+                <span className="info-value mono up">{fin?.profit ?? '—'}</span>
               </div>
               <div className="info-row">
                 <span className="info-label">EPS</span>
-                <span className="info-value mono">¥2.45</span>
+                <span className="info-value mono">{fin?.eps ?? '—'}</span>
               </div>
               <div className="info-row">
                 <span className="info-label">P/E Ratio</span>
-                <span className="info-value mono">45.2x</span>
+                <span className="info-value mono">{fin?.pe ?? '—'}</span>
               </div>
               <div className="info-row">
                 <span className="info-label">Dividend</span>
-                <span className="info-value mono up">2.4%</span>
+                <span className="info-value mono up">{fin?.dividend ?? '—'}</span>
               </div>
             </div>
           </div>
@@ -221,33 +276,20 @@ export default function DealerPanelPage() {
           <div className="info-card">
             <div className="info-card-header">
               <span>👔 Insider Trading</span>
-              <span className="info-card-tag">5 Recent</span>
+              <span className="info-card-tag">{insiderTrades.length} Recent</span>
             </div>
             <div className="info-card-body">
-              <div className="insider-row up">
-                <span className="insider-action">BUY</span>
-                <span className="insider-name">CEO</span>
-                <span className="insider-amount mono">+¥5.0M</span>
-                <span className="insider-time">2d</span>
-              </div>
-              <div className="insider-row down">
-                <span className="insider-action">SELL</span>
-                <span className="insider-name">CFO</span>
-                <span className="insider-amount mono">-¥2.5M</span>
-                <span className="insider-time">3d</span>
-              </div>
-              <div className="insider-row up">
-                <span className="insider-action">BUY</span>
-                <span className="insider-name">Director</span>
-                <span className="insider-amount mono">+¥1.8M</span>
-                <span className="insider-time">5d</span>
-              </div>
-              <div className="insider-row down">
-                <span className="insider-action">SELL</span>
-                <span className="insider-name">VP Eng</span>
-                <span className="insider-amount mono">-¥900K</span>
-                <span className="insider-time">7d</span>
-              </div>
+              {insiderTrades.map((t) => {
+                const value = t.shares * currentQuote.price;
+                return (
+                  <div key={t.name} className={`insider-row ${t.up ? 'up' : 'down'}`}>
+                    <span className="insider-action">{t.action}</span>
+                    <span className="insider-name">{t.name}</span>
+                    <span className="insider-amount mono">{t.up ? '+' : '-'}{fmtFlow(value)}</span>
+                    <span className="insider-time">{t.days}</span>
+                  </div>
+                );
+              })}
             </div>
           </div>
           
@@ -258,28 +300,19 @@ export default function DealerPanelPage() {
               <span className="info-card-tag">Real-time</span>
             </div>
             <div className="info-card-body">
-              <div className="flow-row">
-                <span className="flow-source">Main Capital</span>
-                <span className="flow-direction up">IN</span>
-                <span className="flow-amount mono up">+¥38M</span>
-              </div>
-              <div className="flow-row">
-                <span className="flow-source">Retail Flow</span>
-                <span className="flow-direction up">IN</span>
-                <span className="flow-amount mono up">+¥12M</span>
-              </div>
-              <div className="flow-row">
-                <span className="flow-source">Foreign Inst.</span>
-                <span className="flow-direction up">IN</span>
-                <span className="flow-amount mono up">+¥24M</span>
-              </div>
-              <div className="flow-row">
-                <span className="flow-source">Hedge Funds</span>
-                <span className="flow-direction down">OUT</span>
-                <span className="flow-amount mono down">-¥8M</span>
-              </div>
+              {quantFlows.map((f) => (
+                <div key={f.source} className="flow-row">
+                  <span className="flow-source">{f.source}</span>
+                  <span className={`flow-direction ${f.up ? 'up' : 'down'}`}>{f.dir}</span>
+                  <span className={`flow-amount mono ${f.up ? 'up' : 'down'}`}>
+                    {f.up ? '+' : '-'}{fmtFlow(f.amount)}
+                  </span>
+                </div>
+              ))}
             </div>
           </div>
+        </div>
+      </div>
         </div>
       </div>
     </div>

@@ -1,126 +1,15 @@
-// 角色类型
-export type Role = 'dealer' | 'retail' | 'regulator';
+// Shared types consumed by the Zustand store (src/store/gameStore.ts).
+//
+// The store is the single source of truth for most runtime shapes (Quote, KLine,
+// OrderBook, Player, NewsItem, Indicators, etc. are all defined there). This file
+// only retains the types the store imports — the rich DealerInfo hierarchy and
+// RegulatoryScores — to avoid duplicate/divergent definitions.
 
-// 对局状态
-export type GameStatus = 'idle' | 'matching' | 'flipping' | 'playing' | 'settlement';
-
-// 订单类型
-export type OrderType = 'limit' | 'market';
-export type OrderSide = 'buy' | 'sell';
-
-// 持仓
-export interface Position {
-  symbol: string;
-  quantity: number;
-  avgCost: number;
-  currentPrice: number;
-  unrealizedPnL: number;
-  unrealizedPnLPercent: number;
-}
-
-// 订单
-export interface Order {
-  id: string;
-  symbol: string;
-  type: OrderType;
-  side: OrderSide;
-  price: number;
-  quantity: number;
-  filledQuantity: number;
-  status: 'pending' | 'filled' | 'cancelled';
-  timestamp: number;
-}
-
-// 行情数据
-export interface Quote {
-  symbol: string;
-  name: string;
-  price: number;
-  change: number;
-  changePercent: number;
-  volume: number;
-  amount: number;
-  high: number;
-  low: number;
-  open: number;
-  prevClose: number;
-  timestamp: number;
-}
-
-// K线数据
-export interface KLine {
-  timestamp: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
-
-// 五档盘口
-export interface OrderBookEntry {
-  price: number;
-  quantity: number;
-  orders: number;
-}
-
-export interface OrderBook {
-  bids: OrderBookEntry[];
-  asks: OrderBookEntry[];
-}
-
-// 技术指标
-export interface TechnicalIndicators {
-  ma5: number;
-  ma10: number;
-  ma20: number;
-  macd: {
-    diff: number;
-    dea: number;
-    bar: number;
-  };
-  rsi: number;
-  boll: {
-    upper: number;
-    middle: number;
-    lower: number;
-  };
-}
-
-// 庄家资源
+// 庄家资源（与 store 的 dealerResources 字段保持一致的规范形状）
 export interface DealerResources {
   cash: number;
   energy: number;
   riskIndex: number;
-  totalAssets: number;
-}
-
-// 庄家操作
-export type DealerActionType = 
-  | 'pump'      // 拉升
-  | 'press'     // 打压
-  | 'accumulate' // 吸筹
-  | 'distribute' // 出货
-  | 'wash'       // 对敲
-  | 'fakeOrder' // 假挂单
-  | 'none';
-
-export interface DealerAction {
-  type: DealerActionType;
-  power: number;
-  target: number;
-  cost: number;
-  risk: number;
-}
-
-// 庄家信息
-export interface DealerInfo {
-  resources: DealerResources;
-  hiddenInfo: {
-    realFinancials: FinancialData;
-    insiderTrading: InsiderInfo[];
-    quantFlow: QuantFlowData;
-  };
 }
 
 export interface FinancialData {
@@ -153,95 +42,19 @@ export interface QuantFlowData {
   timestamp: number;
 }
 
-// 散户能力
-export interface RetailAbilities {
-  chartTools: boolean;
-  indicators: {
-    ma: boolean;
-    macd: boolean;
-    rsi: boolean;
-    boll: boolean;
+// 庄家信息（资源 + 隐藏信息），store 的 dealerInfo 字段使用该形状
+export interface DealerInfo {
+  resources: DealerResources;
+  hiddenInfo: {
+    realFinancials: FinancialData;
+    insiderTrading: InsiderInfo[];
+    quantFlow: QuantFlowData;
   };
-  canBuyInsider: boolean;
 }
 
-// 监管告警
-export interface RegulatoryAlert {
-  id: string;
-  type: 'pump' | 'fake_order' | 'wash_trade' | 'insider_trade';
-  severity: 'low' | 'medium' | 'high';
-  description: string;
-  evidence: string;
-  timestamp: number;
-  target: 'dealer' | 'retail';
-  status: 'pending' | 'warning' | 'punish';
-}
-
+// 监管指数（与 store 的 scores 字段保持一致）
 export interface RegulatoryScores {
   manipulation: number;
   insider: number;
   misinformation: number;
-}
-
-// 新闻
-export interface News {
-  id: string;
-  type: 'bullish' | 'bearish' | 'neutral';
-  title: string;
-  content: string;
-  impact: number;
-  timestamp: number;
-}
-
-// 黑天鹅事件
-export interface BlackSwan {
-  id: string;
-  type: string;
-  title: string;
-  description: string;
-  impact: number;
-  duration: number;
-  timestamp: number;
-}
-
-// 玩家
-export interface Player {
-  id: string;
-  name: string;
-  role: Role;
-  avatar?: string;
-  cash: number;
-  positions: Position[];
-  totalAssets: number;
-  isReady: boolean;
-}
-
-// 对局
-export interface Game {
-  id: string;
-  status: GameStatus;
-  day: number;
-  tick: number;
-  maxDays: number;
-  maxTicksPerDay: number;
-  startTime: number;
-  players: Player[];
-  quote: Quote;
-  klines: KLine[];
-  orderBook: OrderBook;
-  indicators: TechnicalIndicators;
-  news: News[];
-  dealerInfo?: DealerInfo;
-  retailAbilities: RetailAbilities;
-  alerts: RegulatoryAlert[];
-  scores: RegulatoryScores;
-}
-
-// 用户状态
-export interface UserState {
-  id: string;
-  name: string;
-  role: Role;
-  selectedSymbol: string;
-  balance: number;
 }

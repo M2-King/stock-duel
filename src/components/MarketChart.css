@@ -1,0 +1,244 @@
+.market-chart {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.mc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-color);
+  flex-wrap: wrap;
+}
+
+.mc-quote {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.mc-symbol {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.5px;
+}
+
+.mc-price {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.mc-change {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mc-stats {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  flex-wrap: wrap;
+}
+
+.mc-stat-label {
+  color: var(--text-tertiary);
+  margin-right: 2px;
+}
+
+.mc-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-color);
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.mc-toolbar-spacer { flex: 1 1 auto; }
+
+.mc-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.mc-zoom-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 700;
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+.mc-zoom-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.mc-zoom-btn:disabled {
+  color: var(--text-tertiary);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.mc-zoom-label {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  min-width: 38px;
+  height: 26px;
+  padding: 0 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+.mc-zoom-label:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+.mc-zoom-hint {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.35);
+  pointer-events: none;
+  font-family: var(--font-mono);
+  user-select: none;
+}
+
+.mc-periods {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-tertiary);
+  padding: 2px;
+  border-radius: 6px;
+}
+
+.mc-pill {
+  background: transparent;
+  color: var(--text-secondary);
+  border: none;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  transition: all 0.15s;
+  min-height: 28px;
+}
+
+.mc-pill:hover {
+  color: var(--text-primary);
+}
+
+.mc-pill.active {
+  background: var(--accent-blue);
+  color: #fff;
+}
+
+.mc-indicators {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.mc-ind-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg-tertiary);
+  color: var(--text-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 3px 9px;
+  font-size: 10.5px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  transition: all 0.15s;
+  min-height: 24px;
+}
+
+.mc-ind-chip:hover {
+  border-color: var(--accent-blue);
+  color: var(--text-primary);
+}
+
+.mc-ind-chip.on {
+  background: var(--bg-elevated);
+}
+
+.mc-ind-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.mc-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  padding: 4px;
+}
+
+.mc-body.compact {
+  padding: 0;
+}
+
+.mc-body svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+@media (max-width: 768px) {
+  .mc-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .mc-stats {
+    width: 100%;
+  }
+  .mc-toolbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .mc-indicators {
+    width: 100%;
+    overflow-x: auto;
+  }
+}

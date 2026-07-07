@@ -1,20 +1,27 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useGameStore } from '../store/gameStore';
+import MarketChart from '../components/MarketChart';
 import './TradePanel.css';
 
 export default function TradePanel() {
-  const { currentQuote, orderBook, holdings, indicators, cash: playerCash, leverage, setLeverage, placeOrder, purchaseInsiderInfo, gameStatus, unrealizedPnl } = useGameStore();
+  const { currentQuote, orderBook, holdings, cash: playerCash, borrowed, leverage, setLeverage, placeOrder, purchaseInsiderInfo, gameStatus, unrealizedPnl, allStocks, watchlist, selectSymbol, toggleWatchlist, showToast } = useGameStore();
+  // Real available buying power = cash*leverage minus outstanding borrowed margin.
+  const buyingPower = Math.max(0, playerCash * leverage - borrowed);
   const positionCost = holdings.reduce((s, h) => s + h.avgPrice * h.shares, 0);
   const unrealizedPct = positionCost > 0 ? (unrealizedPnl / positionCost) * 100 : 0;
   const [side] = useState<'buy' | 'sell'>('buy');
   const [orderType, setOrderType] = useState('market');
   const [quantity, setQuantity] = useState(500);
-  const [price] = useState(currentQuote.price);
+  const [limitPrice, setLimitPrice] = useState(currentQuote.price);
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; msg: string } | null>(null);
   const [insiderFeedback, setInsiderFeedback] = useState<{ kind: 'success' | 'error'; msg: string } | null>(null);
 
-  // Chart data
-  const candleData = generateCandles(60, currentQuote.price);
+  const orderPrice = orderType === 'market' ? currentQuote.price : limitPrice;
+
+  useEffect(() => {
+    setLimitPrice(currentQuote.price);
+    setQuantity(500);
+  }, [currentQuote.symbol]);
 
   const flashFeedback = (kind: 'success' | 'error', msg: string) => {
     setFeedback({ kind, msg });
@@ -26,12 +33,12 @@ export default function TradePanel() {
       symbol: currentQuote.symbol,
       type: orderType as 'market' | 'limit' | 'stop',
       side: 'buy',
-      price,
+      price: orderPrice,
       quantity,
       status: 'filled',
     });
     if (result.success) {
-      flashFeedback('success', `买入 ${quantity} 股 ${currentQuote.symbol} @ ¥${price.toFixed(2)}`);
+      flashFeedback('success', `买入 ${quantity} 股 ${currentQuote.symbol} @ ¥${orderPrice.toFixed(2)}`);
     } else {
       flashFeedback('error', result.error || '买入失败');
     }
@@ -42,20 +49,29 @@ export default function TradePanel() {
       symbol: currentQuote.symbol,
       type: orderType as 'market' | 'limit' | 'stop',
       side: 'sell',
-      price,
+      price: orderPrice,
       quantity,
       status: 'filled',
     });
     if (result.success) {
-      flashFeedback('success', `卖出 ${quantity} 股 ${currentQuote.symbol} @ ¥${price.toFixed(2)}`);
+      flashFeedback('success', `卖出 ${quantity} 股 ${currentQuote.symbol} @ ¥${orderPrice.toFixed(2)}`);
     } else {
       flashFeedback('error', result.error || '卖出失败');
     }
   };
 
+  // selectSymbol does not toast on its own, so we add feedback here (no duplicate).
+  const handleSelectSymbol = (symbol: string) => {
+    if (symbol === currentQuote.symbol) return;
+    selectSymbol(symbol);
+    showToast(`已切换到 ${symbol}`, 'info');
+  };
+
+  const isWatched = watchlist.includes(currentQuote.symbol);
+
   const setSharePct = (pct: number) => {
     if (side === 'buy') {
-      const maxAffordable = Math.floor(playerCash / price);
+      const maxAffordable = Math.floor(playerCash / orderPrice);
       setQuantity(Math.floor(maxAffordable * pct));
     } else {
       const holding = holdings.find(h => h.symbol === currentQuote.symbol);
@@ -66,6 +82,53 @@ export default function TradePanel() {
 
   return (
     <div className="trade-panel">
+      {/* Quick symbol switcher: watchlist chips + full stock dropdown */}
+      <div className="symbol-bar">
+        <div className="symbol-chips">
+          {watchlist.map(sym => {
+            const stock = allStocks.find(s => s.symbol === sym);
+            if (!stock) return null;
+            const isActive = sym === currentQuote.symbol;
+            const pct = isActive ? currentQuote.changePercent : stock.changePercent;
+            return (
+              <button
+                key={sym}
+                type="button"
+                className={`symbol-chip ${isActive ? 'active' : ''}`}
+                onClick={() => handleSelectSymbol(sym)}
+                title={stock.name}
+              >
+                <span className="symbol-chip-sym">{sym}</span>
+                <span className={`symbol-chip-pct ${pct >= 0 ? 'up' : 'down'}`}>
+                  {pct >= 0 ? '+' : ''}{pct.toFixed(2)}%
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="symbol-bar-controls">
+          <select
+            className="symbol-select"
+            value={currentQuote.symbol}
+            onChange={e => handleSelectSymbol(e.target.value)}
+            aria-label="选择股票"
+          >
+            {allStocks.map(s => (
+              <option key={s.symbol} value={s.symbol}>
+                {s.symbol} · {s.name}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className={`symbol-star ${isWatched ? 'active' : ''}`}
+            onClick={() => toggleWatchlist(currentQuote.symbol)}
+            title={isWatched ? '从自选移除' : '加入自选'}
+          >
+            {isWatched ? '★' : '☆'}
+          </button>
+        </div>
+      </div>
       <div className="trade-content">
         {/* Order Book */}
         <div className="orderbook-panel">
@@ -100,34 +163,9 @@ export default function TradePanel() {
           </table>
         </div>
 
-        {/* Chart */}
+        {/* Chart - shared MarketChart (candles + indicators) */}
         <div className="chart-panel">
-          <div className="chart-toolbar">
-            <div className="chart-symbol-info">
-              <span className="chart-symbol">{currentQuote.symbol}</span>
-              <span className="chart-price-info mono">
-                <span className={currentQuote.change >= 0 ? 'up' : 'down'}>${currentQuote.price.toFixed(2)}</span>
-                <span className={currentQuote.change >= 0 ? 'up' : 'down'}>
-                  ({currentQuote.change >= 0 ? '+' : ''}{currentQuote.changePercent.toFixed(2)}%)
-                </span>
-              </span>
-            </div>
-            <div className="chart-periods">
-              {['1m', '5m', '15m', '1H', '4H', '1D'].map(p => (
-                <button key={p} className={`chart-period ${p === '1m' ? 'active' : ''}`}>
-                  {p}
-                </button>
-              ))}
-            </div>
-          </div>
-          <CandlestickChart data={candleData} />
-          <div className="chart-indicators">
-            <span className="ind-tag">MA5 <span className="mono">{indicators.ma5.toFixed(2)}</span></span>
-            <span className="ind-tag">MA10 <span className="mono">{indicators.ma10.toFixed(2)}</span></span>
-            <span className="ind-tag">MA20 <span className="mono">{indicators.ma20.toFixed(2)}</span></span>
-            <span className="ind-tag">RSI <span className="mono">{indicators.rsi.toFixed(1)}</span></span>
-            <span className="ind-tag">BOLL U <span className="mono">{indicators.boll.upper.toFixed(2)}</span></span>
-          </div>
+          <MarketChart />
         </div>
 
         {/* Trading Desk */}
@@ -137,7 +175,7 @@ export default function TradePanel() {
           <div className="balance-block">
             <div>
               <div className="balance-label">Buying Power</div>
-              <div className="balance-value mono">${(playerCash * leverage).toLocaleString()}</div>
+              <div className="balance-value mono">${buyingPower.toLocaleString()}</div>
             </div>
             <div>
               <div className="balance-label">Unrealized P&L</div>
@@ -276,81 +314,6 @@ export default function TradePanel() {
           </div>
         </div>
       </div>
-    </div>
-  );
-}
-
-function generateCandles(count: number, basePrice: number) {
-  const candles = [];
-  let price = basePrice;
-  for (let i = 0; i < count; i++) {
-    const open = price;
-    const change = (Math.random() - 0.45) * 1.5;
-    const close = price + change;
-    const high = Math.max(open, close) + Math.random() * 0.6;
-    const low = Math.min(open, close) - Math.random() * 0.6;
-    candles.push({ open, high, low, close, x: i });
-    price = close;
-  }
-  return candles;
-}
-
-function CandlestickChart({ data }: { data: any[] }) {
-  const min = Math.min(...data.map(d => d.low));
-  const max = Math.max(...data.map(d => d.high));
-  const range = max - min || 1;
-  
-  return (
-    <div className="candlestick-container">
-      <svg viewBox="0 0 600 320" preserveAspectRatio="none" className="candlestick-svg">
-        <defs>
-          <linearGradient id="trade-area-gradient" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="rgba(255, 255, 255, 0.08)" />
-            <stop offset="100%" stopColor="rgba(255, 255, 255, 0)" />
-          </linearGradient>
-        </defs>
-        
-        {/* Grid */}
-        {[...Array(5)].map((_, i) => (
-          <line 
-            key={i} 
-            x1="0" 
-            y1={(i + 1) * 64} 
-            x2="600" 
-            y2={(i + 1) * 64} 
-            stroke="rgba(255, 255, 255, 0.04)" 
-            strokeWidth="0.5"
-          />
-        ))}
-        
-        {/* Candles */}
-        {data.map((c, i) => {
-          const isUp = c.close >= c.open;
-          const x = (i / data.length) * 600 + 5;
-          const w = (600 / data.length) * 0.6;
-          
-          const yHigh = 320 - ((c.high - min) / range) * 300 - 10;
-          const yLow = 320 - ((c.low - min) / range) * 300 - 10;
-          const yOpen = 320 - ((c.open - min) / range) * 300 - 10;
-          const yClose = 320 - ((c.close - min) / range) * 300 - 10;
-          
-          const bodyTop = Math.min(yOpen, yClose);
-          const bodyHeight = Math.abs(yClose - yOpen) || 1;
-          
-          return (
-            <g key={i}>
-              <line x1={x} y1={yHigh} x2={x} y2={yLow} stroke={isUp ? 'var(--price-up)' : 'var(--price-down)'} strokeWidth="1" />
-              <rect 
-                x={x - w / 2} 
-                y={bodyTop} 
-                width={w} 
-                height={bodyHeight} 
-                fill={isUp ? 'var(--price-up)' : 'var(--price-down)'}
-              />
-            </g>
-          );
-        })}
-      </svg>
     </div>
   );
 }

@@ -55,13 +55,6 @@ export default function Home() {
     setIsMatching(true);
     setMatchStep(0);
     
-    const steps = [
-      '正在匹配对手...',
-      '已找到对手',
-      '正在分配身份...',
-      '对局即将开始',
-    ];
-    
     let step = 0;
     const interval = setInterval(() => {
       step++;

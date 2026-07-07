@@ -8,6 +8,7 @@ export default function Portfolio() {
   const {
     holdings,
     cash,
+    borrowed,
     totalAssets,
     todayPnl,
     todayPnlPercent,
@@ -101,7 +102,7 @@ export default function Portfolio() {
           <div className="summary-value mono">${(cash / 10000).toFixed(1)}万</div>
           <div className="summary-meta-small">
             <span>Buying Power: </span>
-            <span className="mono">${(cash * leverage / 10000).toFixed(1)}万</span>
+            <span className="mono">${(Math.max(0, cash * leverage - borrowed) / 10000).toFixed(1)}万</span>
           </div>
         </div>
       </div>

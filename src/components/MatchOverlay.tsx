@@ -21,7 +21,7 @@ const roleIcon: Record<Role, string> = {
 };
 
 export default function MatchOverlay() {
-  const { gameStatus, reversalCards, revealReversalCard, setGameStatus, cancelMatch, randomizeMyRole, role } = useGameStore();
+  const { gameStatus, reversalCards, revealReversalCard, setGameStatus, cancelMatch, randomizeMyRole } = useGameStore();
 
   // Auto-progress matching -> reversed (2.5s)
   useEffect(() => {

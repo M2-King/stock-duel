@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import './Sidebar.css';
 
 export type NavSection = 'overview' | 'markets' | 'portfolio' | 'watchlist' | 'news' | 'tools' | 'messages' | 'rankings' | 'regulator' | 'settings';

@@ -3,6 +3,44 @@
   flex-direction: column;
   gap: var(--space-3);
   height: 100%;
+  min-height: 0;
+}
+
+.dealer-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(420px, 1fr);
+  gap: var(--space-3);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.dealer-chart {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.dealer-chart > .market-chart {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.dealer-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+@media (max-width: 1100px) {
+  .dealer-layout {
+    grid-template-columns: 1fr;
+  }
+  .dealer-side {
+    overflow-y: visible;
+  }
 }
 
 /* Resources */

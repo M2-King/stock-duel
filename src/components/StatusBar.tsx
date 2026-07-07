@@ -1,5 +1,5 @@
 import { useGameStore } from '../store/gameStore';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { clockFromTickSeconds } from '../utils/clock';
 import './StatusBar.css';
 

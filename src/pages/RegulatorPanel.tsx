@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { useGameStore } from '../store/gameStore';
+import MarketChart from '../components/MarketChart';
 import './RegulatorPanel.css';
 
 export default function RegulatorPanelPage() {
-  const { alerts, regulatoryScores: scores, players, currentQuote, applyRegulatoryAction } = useGameStore();
+  const { alerts, regulatoryScores: scores, players, currentQuote, holdings, cash, dealerResources, applyRegulatoryAction } = useGameStore();
   const [filter, setFilter] = useState<'all' | 'low' | 'medium' | 'high'>('all');
-  const [lastAction, setLastAction] = useState<{ id: string; action: string } | null>(null);
+  const [, setLastAction] = useState<{ id: string; action: string } | null>(null);
 
   const filteredAlerts = filter === 'all'
     ? alerts.filter(a => !a.resolved)
@@ -38,7 +39,11 @@ export default function RegulatorPanelPage() {
         </div>
       </div>
 
-      <div className="regulator-content">
+      <div className="regulator-layout">
+        <div className="regulator-chart">
+          <MarketChart compact />
+        </div>
+        <div className="regulator-content">
         {/* Players View */}
         <div className="players-section">
           <div className="section-header">
@@ -75,30 +80,37 @@ export default function RegulatorPanelPage() {
                   <span className="right">Risk</span>
                 </div>
                 {player.role === 'dealer' && (
-                  <>
-                    <div className="position-row">
-                      <span className="bold">{currentQuote.symbol}</span>
-                      <span className="right mono">+124,560</span>
-                      <span className="right mono">¥{(player.cash / 10000).toFixed(0)}万</span>
-                      <span className="right risk-tag">32%</span>
-                    </div>
-                  </>
+                  <div className="position-row">
+                    <span className="bold">{currentQuote.symbol}</span>
+                    <span className="right mono">
+                      {holdings.find(h => h.symbol === currentQuote.symbol)?.shares.toLocaleString() ?? '—'}
+                    </span>
+                    <span className="right mono">¥{((dealerResources?.cash ?? 0) / 10000).toFixed(0)}万</span>
+                    <span className={`right risk-tag ${(dealerResources?.riskIndex ?? 0) > 60 ? '' : 'low'}`}>
+                      {(dealerResources?.riskIndex ?? 0).toFixed(0)}%
+                    </span>
+                  </div>
                 )}
                 {player.role === 'retail' && (
-                  <>
+                  holdings.length === 0 ? (
                     <div className="position-row">
-                      <span className="bold">QDN</span>
-                      <span className="right mono">500</span>
-                      <span className="right mono">¥{(player.cash / 10000).toFixed(0)}万</span>
-                      <span className="right risk-tag low">5%</span>
-                    </div>
-                    <div className="position-row">
-                      <span className="bold">AAPL</span>
-                      <span className="right mono">200</span>
+                      <span className="text-muted">No open positions</span>
                       <span className="right mono">—</span>
-                      <span className="right risk-tag low">3%</span>
+                      <span className="right mono">¥{(cash / 10000).toFixed(0)}万</span>
+                      <span className="right risk-tag low">0%</span>
                     </div>
-                  </>
+                  ) : (
+                    holdings.map((h, i) => (
+                      <div className="position-row" key={h.symbol}>
+                        <span className="bold">{h.symbol}</span>
+                        <span className="right mono">{h.shares.toLocaleString()}</span>
+                        <span className="right mono">{i === 0 ? `¥${(cash / 10000).toFixed(0)}万` : '—'}</span>
+                        <span className={`right risk-tag ${h.pnlPercent < 0 ? '' : 'low'}`}>
+                          {h.pnlPercent >= 0 ? '+' : ''}{h.pnlPercent.toFixed(1)}%
+                        </span>
+                      </div>
+                    ))
+                  )
                 )}
                 {player.role === 'regulator' && (
                   <div className="position-row empty">
@@ -181,6 +193,7 @@ export default function RegulatorPanelPage() {
               </div>
             ))}
           </div>
+        </div>
         </div>
       </div>
     </div>

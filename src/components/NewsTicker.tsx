@@ -1,21 +1,23 @@
 import { useGameStore } from '../store/gameStore';
+import type { NewsItem } from '../store/gameStore';
 import './NewsTicker.css';
 
 export default function NewsTicker() {
   const { news } = useGameStore();
 
-  const getNewsIcon = (type: string) => {
+  // NewsItem.type encodes sentiment: verified = 利好, warning = 利空, unverified = 中性.
+  const getNewsIcon = (type: NewsItem['type']) => {
     switch (type) {
-      case 'bullish': return '📈';
-      case 'bearish': return '📉';
+      case 'verified': return '📈';
+      case 'warning': return '📉';
       default: return '📋';
     }
   };
 
-  const getNewsColor = (type: string) => {
+  const getNewsColor = (type: NewsItem['type']) => {
     switch (type) {
-      case 'bullish': return 'var(--color-success)';
-      case 'bearish': return 'var(--color-danger)';
+      case 'verified': return 'var(--color-success)';
+      case 'warning': return 'var(--color-danger)';
       default: return 'var(--color-info)';
     }
   };
@@ -58,7 +60,7 @@ export default function NewsTicker() {
                     className="news-type"
                     style={{ color: getNewsColor(item.type) }}
                   >
-                    {item.type === 'bullish' ? '利好' : item.type === 'bearish' ? '利空' : '中性'}
+                    {item.type === 'verified' ? '利好' : item.type === 'warning' ? '利空' : '中性'}
                   </span>
                   <span className="news-time">{formatTime(item.timestamp)}</span>
                 </div>

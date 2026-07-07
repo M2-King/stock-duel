@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { DealerInfo, RegulatoryScores } from '../types';
+import type { DealerInfo, RegulatoryScores, DealerResources } from '../types';
 
 export type Role = 'dealer' | 'retail' | 'regulator';
 
@@ -86,6 +86,10 @@ interface Indicators {
   macd: { diff: number; dea: number; bar: number };
   rsi: number;
   boll: { upper: number; middle: number; lower: number };
+  kdj: { k: number; d: number; j: number };
+  wr: number;
+  dmi: { pdi: number; mdi: number; adx: number; adxr: number };
+  vr: number;
 }
 
 export interface IndicatorSeries {
@@ -95,6 +99,10 @@ export interface IndicatorSeries {
   macd: { diff: (number | null)[]; dea: (number | null)[]; bar: (number | null)[] };
   rsi: (number | null)[];
   boll: { upper: (number | null)[]; middle: (number | null)[]; lower: (number | null)[] };
+  kdj: { k: (number | null)[]; d: (number | null)[]; j: (number | null)[] };
+  wr: (number | null)[];
+  dmi: { pdi: (number | null)[]; mdi: (number | null)[]; adx: (number | null)[]; adxr: (number | null)[] };
+  vr: (number | null)[];
 }
 
 interface Holding {
@@ -145,12 +153,6 @@ interface InsiderData {
   eps: string;
   pe: string;
   dividend: string;
-}
-
-interface DealerResources {
-  cash: number;
-  energy: number;
-  riskIndex: number;
 }
 
 interface UserSettings {
@@ -259,6 +261,9 @@ interface GameState {
   todayPnlPercent: number;
   unrealizedPnl: number;
   leverage: number;
+  // Borrowed margin debt. When a buy exceeds settled cash (up to cash*leverage),
+  // the uncovered portion becomes borrowed. Net worth = cash + positionValue - borrowed.
+  borrowed: number;
   orderHistory: OrderRecord[];
   totalTradeCount: number;
   bestTradePnl: number;
@@ -278,6 +283,11 @@ interface GameState {
   // the tick engine and DealerPanel fallback.
   dealerInfo: DealerInfo | null;
   insiderData: InsiderData | null;
+
+  // Insider tip: a REAL purchased tip locks the direction of the next news event
+  // (up=bullish, down=bearish) until expiresTick. Trading in that direction while
+  // active flags the player for insider trading. Fake tips do NOT set this.
+  pendingInsiderTip: { direction: 'up' | 'down'; expiresTick: number } | null;
 
   // Regulator
   alerts: Alert[];
@@ -394,6 +404,10 @@ const initialIndicators: Indicators = {
   macd: { diff: 0.45, dea: 0.32, bar: 0.13 },
   rsi: 62.4,
   boll: { upper: 96.20, middle: 93.80, lower: 91.40 },
+  kdj: { k: 50, d: 50, j: 50 },
+  wr: -50,
+  dmi: { pdi: 25, mdi: 15, adx: 20, adxr: 20 },
+  vr: 100,
 };
 
 const initialIndicatorSeries: IndicatorSeries = {
@@ -403,6 +417,10 @@ const initialIndicatorSeries: IndicatorSeries = {
   macd: { diff: [], dea: [], bar: [] },
   rsi: [],
   boll: { upper: [], middle: [], lower: [] },
+  kdj: { k: [], d: [], j: [] },
+  wr: [],
+  dmi: { pdi: [], mdi: [], adx: [], adxr: [] },
+  vr: [],
 };
 
 const allStocks: Stock[] = [
@@ -579,6 +597,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   todayPnlPercent: 0,
   unrealizedPnl: 0,
   leverage: 2,
+  borrowed: 0,
   orderHistory: [
     { id: 'o1', symbol: 'QDN', type: 'market', side: 'buy', price: 90.12, quantity: 500, status: 'filled', timestamp: Date.now() - 86400000 },
     { id: 'o2', symbol: 'AAPL', type: 'limit', side: 'buy', price: 175.45, quantity: 200, status: 'filled', timestamp: Date.now() - 172800000 },
@@ -617,6 +636,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     pe: '45.2x',
     dividend: '2.4%',
   },
+  pendingInsiderTip: null,
   alerts: initialAlerts,
   regulatoryScores: { manipulation: 32.5, insider: 18.2, misinformation: 12.8 },
   scores: { manipulation: 32.5, insider: 18.2, misinformation: 12.8 },
@@ -687,20 +707,30 @@ simulation: {
   setIndicators: (indicators) => set({ indicators }),
   
   selectSymbol: (symbol) => {
-    const stock = get().allStocks.find(s => s.symbol === symbol);
-    if (stock) {
-      set({
-        currentQuote: {
-          ...get().currentQuote,
-          symbol: stock.symbol,
-          name: stock.name,
-          price: stock.price,
-          change: stock.change,
-          changePercent: stock.changePercent,
-          volume: stock.volume,
-        }
-      });
-    }
+    const state = get();
+    const stock = state.allStocks.find(s => s.symbol === symbol);
+    if (!stock) return;
+    const price = state.stockPrices[symbol] ?? stock.price;
+    const prevClose = stock.price - stock.change;
+    const change = price - prevClose;
+    const changePercent = prevClose > 0 ? (change / prevClose) * 100 : stock.changePercent;
+    set({
+      currentQuote: {
+        ...state.currentQuote,
+        symbol: stock.symbol,
+        name: stock.name,
+        price,
+        change,
+        changePercent,
+        volume: stock.volume,
+        open: price,
+        high: price,
+        low: price,
+        prevClose,
+        timestamp: Date.now(),
+      },
+    });
+    get().refreshOrderBook();
   },
   
   toggleWatchlist: (symbol) => set((s) => ({
@@ -715,8 +745,11 @@ simulation: {
 
     // Pre-flight validation
     if (order.side === 'buy') {
-      if (amount > state.cash) {
-        get().showToast(`资金不足: 需要 ¥${amount.toLocaleString()}，可用 ¥${state.cash.toLocaleString()}`, 'warning');
+      // Leverage lets a buy use up to cash * leverage. The portion above settled
+      // cash becomes borrowed margin (tracked in state.borrowed).
+      const buyingPower = state.cash * state.leverage;
+      if (amount > buyingPower) {
+        get().showToast(`资金不足: 需要 ¥${amount.toLocaleString()}，可用杠杆购买力 ¥${buyingPower.toLocaleString()}`, 'warning');
         return { success: false, error: '资金不足' };
       }
     } else {
@@ -732,7 +765,21 @@ simulation: {
 
     set((s) => {
       const orderHistory = [{ ...order, id, timestamp: Date.now() }, ...s.orderHistory.slice(0, 49)];
-      const cash = order.side === 'buy' ? s.cash - amount : s.cash + amount;
+      // Borrowed-margin accounting: cash stays >= 0. A buy first spends settled
+      // cash, then borrows the remainder. A sell's proceeds first repay borrowed
+      // debt, then top up cash.
+      let cash = s.cash;
+      let borrowed = s.borrowed;
+      if (order.side === 'buy') {
+        const fromCash = Math.min(s.cash, amount);
+        const borrow = amount - fromCash;
+        cash = s.cash - fromCash;
+        borrowed = s.borrowed + borrow;
+      } else {
+        const repay = Math.min(s.borrowed, amount);
+        borrowed = s.borrowed - repay;
+        cash = s.cash + (amount - repay);
+      }
       // Update holdings
       let holdings = s.holdings;
       const idx = holdings.findIndex(h => h.symbol === order.symbol);
@@ -781,13 +828,14 @@ simulation: {
       }
       const unrealizedPnl = holdings.reduce((sum, h) => sum + h.pnl, 0);
       const positionValue = holdings.reduce((sum, h) => sum + h.marketPrice * h.shares, 0);
-      const portfolioTotal = cash + positionValue;
+      const portfolioTotal = cash + positionValue - borrowed;
       const todayPnl = portfolioTotal - s.simulation.initialAssets;
       const todayPnlPercent = (todayPnl / s.simulation.initialAssets) * 100;
       return {
         orderHistory,
         cash,
         playerCash: cash,
+        borrowed,
         holdings,
         unrealizedPnl,
         portfolioTotal,
@@ -799,6 +847,26 @@ simulation: {
         currentTick: s.currentTick + 1,
       };
     });
+
+    // Timed insider-trade detection: trading in the direction of an active REAL
+    // insider tip (before it expires) flags the player for insider trading.
+    const tip = state.pendingInsiderTip;
+    if (
+      tip &&
+      state.currentTick <= tip.expiresTick &&
+      ((tip.direction === 'up' && order.side === 'buy') ||
+        (tip.direction === 'down' && order.side === 'sell'))
+    ) {
+      get().adjustScores({ insider: 8 });
+      get().addAlert({
+        id: `insider_trade_${Date.now()}`,
+        severity: 'high',
+        title: '内幕交易嫌疑',
+        description: `在内幕消息生效期间${order.side === 'buy' ? '买入' : '卖出'} ${order.symbol}，涉嫌利用内部信息交易`,
+        timestamp: Date.now(),
+        source: 'Insider Trading Monitor',
+      });
+    }
 
     get().showToast(
       `${order.side === 'buy' ? '买入' : '卖出'} ${order.symbol} ${order.quantity}股 @ ¥${order.price.toFixed(2)}`,
@@ -812,6 +880,10 @@ simulation: {
       const h = s.holdings.find(x => x.symbol === symbol);
       if (!h) return s;
       const proceeds = h.shares * price;
+      // Proceeds repay borrowed debt first, then add to settled cash.
+      const repay = Math.min(s.borrowed, proceeds);
+      const borrowed = s.borrowed - repay;
+      const cash = s.cash + (proceeds - repay);
       const newOrder: OrderRecord = {
         id: `close_${Date.now()}`,
         symbol,
@@ -822,10 +894,16 @@ simulation: {
         status: 'filled',
         timestamp: Date.now(),
       };
+      const holdings = s.holdings.filter(x => x.symbol !== symbol);
+      const positionValue = holdings.reduce((sum, hh) => sum + hh.marketPrice * hh.shares, 0);
+      const portfolioTotal = cash + positionValue - borrowed;
       return {
-        cash: s.cash + proceeds,
-        playerCash: s.cash + proceeds,
-        holdings: s.holdings.filter(x => x.symbol !== symbol),
+        cash,
+        playerCash: cash,
+        borrowed,
+        holdings,
+        portfolioTotal,
+        totalAssets: portfolioTotal,
         orderHistory: [newOrder, ...s.orderHistory].slice(0, 50),
       };
     });
@@ -875,11 +953,15 @@ simulation: {
       playerCash: STARTING_ASSETS,
       portfolioTotal: STARTING_ASSETS,
       totalAssets: STARTING_ASSETS,
+      borrowed: 0,
       todayPnl: 0,
       todayPnlPercent: 0,
       unrealizedPnl: 0,
       totalTradeCount: 0,
       bestTradePnl: 0,
+      // Reset dealer resources so energy / risk / capital don't persist across matches.
+      dealerResources: { cash: 50000000, energy: 100, riskIndex: 32 },
+      pendingInsiderTip: null,
       simulation: {
         ...get().simulation,
         session: 'morning',
@@ -1162,18 +1244,22 @@ simulation: {
       return { success: false, error: '资金不足' };
     }
     const trustworthy = Math.random() < 0.6;
-    const tips = trustworthy
-      ? [
-        '机构正在大举建仓，主力资金持续流入',
-        '财报内测超预期，分析师已上调目标价',
-        '公司即将宣布重大资产重组',
-      ]
-      : [
-        '坊间传闻公司将被收购（已证伪）',
-        '明日有重大利好公告（虚假信息）',
-        '高管即将集体增持（信息有误）',
-      ];
-    const tip = tips[Math.floor(Math.random() * tips.length)];
+    // A real tip forecasts the direction of the NEXT news event; the tip text is
+    // chosen to match that locked direction so it turns out accurate.
+    const INSIDER_TIP_WINDOW = 20; // ticks the tip stays actionable / detectable
+    const direction: 'up' | 'down' = Math.random() < 0.5 ? 'up' : 'down';
+    const realTips: Record<'up' | 'down', string> = {
+      up: '机构正在大举建仓，主力资金持续流入（利好在即）',
+      down: '主力资金持续出逃，警惕即将到来的回调（利空在即）',
+    };
+    const fakeTips = [
+      '坊间传闻公司将被收购（已证伪）',
+      '明日有重大利好公告（虚假信息）',
+      '高管即将集体增持（信息有误）',
+    ];
+    const tip = trustworthy
+      ? realTips[direction]
+      : fakeTips[Math.floor(Math.random() * fakeTips.length)];
     const nextCash = state.cash - cost;
     const nextScores = {
       ...state.regulatoryScores,
@@ -1191,6 +1277,10 @@ simulation: {
         insider: nextScores.insider,
         misinformation: nextScores.misinformation,
       },
+      // Only a real tip locks the next news direction; fake tips mislead.
+      pendingInsiderTip: trustworthy
+        ? { direction, expiresTick: state.currentTick + INSIDER_TIP_WINDOW }
+        : null,
     });
     get().addAlert({
       id: `insider_${Date.now()}`,
@@ -1249,7 +1339,7 @@ simulation: {
     // Compute final assets
     const finalCash = state.cash;
     const finalPositions = state.holdings.reduce((sum, h) => sum + h.marketPrice * h.shares, 0);
-    const finalAssets = finalCash + finalPositions;
+    const finalAssets = finalCash + finalPositions - state.borrowed;
     const initialAssets = state.simulation.initialAssets;
     const returnRate = ((finalAssets - initialAssets) / initialAssets) * 100;
     // Mock opponent: simulate opponent return ~ random
@@ -1321,7 +1411,7 @@ simulation: {
 
     // Mid-day stats (morning session P&L)
     const positions = state.holdings.reduce((s, h) => s + h.marketPrice * h.shares, 0);
-    const totalAssets = state.cash + positions;
+    const totalAssets = state.cash + positions - state.borrowed;
     const dayPnl = totalAssets - state.simulation.dayOpenAssets;
     const dayPnlPct = (dayPnl / state.simulation.dayOpenAssets) * 100;
     const lastPrice = state.currentQuote.price;
@@ -1380,7 +1470,7 @@ simulation: {
 
     // Compute daily settlement stats
     const positions = state.holdings.reduce((s, h) => s + h.marketPrice * h.shares, 0);
-    const totalAssets = state.cash + positions;
+    const totalAssets = state.cash + positions - state.borrowed;
     const dayPnl = totalAssets - state.simulation.dayOpenAssets;
     const dayPnlPct = (dayPnl / state.simulation.dayOpenAssets) * 100;
     const lastPrice = state.currentQuote.price;
@@ -1463,7 +1553,7 @@ simulation: {
         session: 'morning',
         dailySettlement: null,
         dayOpenPrice: lastPrice,
-        dayOpenAssets: state.cash + state.holdings.reduce((s, h) => s + h.marketPrice * h.shares, 0),
+        dayOpenAssets: state.cash + state.holdings.reduce((s, h) => s + h.marketPrice * h.shares, 0) - state.borrowed,
         dayAutoTimer: null,
       },
     });
@@ -1582,12 +1672,41 @@ simulation: {
       return;
     }
 
-    // Geometric Brownian motion: slight upward bias (0.02)
-    const delta = (Math.random() - 0.48) * 0.0006;
-    const newPrice = Math.max(1, state.currentQuote.price * (1 + delta));
+    // Geometric Brownian motion with a slight upward bias (the -0.48 offset).
+    // Per-symbol GBM step helper — shared by the selected symbol and every holding
+    // so their per-tick volatility stays consistent.
+    // Volatility raised from 0.0006 (~±0.03%/tick, which rendered as a flat line once
+    // "playing") to 0.005 (~±0.25%/tick) so live moves are visually comparable to the
+    // pre-game synthesized intraday series (Dashboard uses price * 0.0035 noise).
+    const gbmStep = (prevPrice: number) => {
+      const delta = (Math.random() - 0.48) * 0.005;
+      return Math.max(1, prevPrice * (1 + delta));
+    };
+
+    // Selected symbol: keep the exact currentQuote update semantics.
+    const selectedPrevPrice = state.stockPrices[state.currentQuote.symbol] ?? state.currentQuote.price;
+    const newPrice = gbmStep(selectedPrevPrice);
     const newChange = newPrice - state.currentQuote.prevClose;
     const newChangePct = (newChange / state.currentQuote.prevClose) * 100;
     const newVolume = state.currentQuote.volume + Math.floor(Math.random() * 100);
+
+    // Build an updated per-symbol price map: selected symbol + every holding symbol,
+    // each stepping independently from its own previous price.
+    const nextStockPrices: Record<string, number> = { ...state.stockPrices };
+    nextStockPrices[state.currentQuote.symbol] = newPrice;
+    for (const h of state.holdings) {
+      if (h.symbol === state.currentQuote.symbol) continue;
+      const prev = state.stockPrices[h.symbol] ?? h.marketPrice ?? h.avgPrice;
+      nextStockPrices[h.symbol] = gbmStep(prev);
+    }
+
+    // Dealer energy slowly regenerates each tick (capped at 100) so a session's
+    // manipulation budget recovers over time without being infinite.
+    const ENERGY_REGEN_PER_TICK = 0.5;
+    const dr = state.dealerResources;
+    const regenDealerResources = dr
+      ? { ...dr, energy: Math.min(100, dr.energy + ENERGY_REGEN_PER_TICK) }
+      : null;
 
     set({
       currentQuote: {
@@ -1603,7 +1722,8 @@ simulation: {
       timelineData: [...state.timelineData, newPrice].slice(-500),
       currentTick: state.currentTick + 1,
       // Track per-symbol price for multi-symbol mark-to-market.
-      stockPrices: { ...state.stockPrices, [state.currentQuote.symbol]: newPrice },
+      stockPrices: nextStockPrices,
+      dealerResources: regenDealerResources,
     });
 
     // Daily pacing: 4 trading segments separated by 11:30 lunch break and 15:00 close
@@ -1636,7 +1756,7 @@ simulation: {
       });
       const positionValue = holdings.reduce((sum, h) => sum + h.marketPrice * h.shares, 0);
       const unrealizedPnl = holdings.reduce((sum, h) => sum + h.pnl, 0);
-      const portfolioTotal = s.cash + positionValue;
+      const portfolioTotal = s.cash + positionValue - s.borrowed;
       const initialAssets = s.simulation.initialAssets || STARTING_ASSETS;
       const todayPnl = portfolioTotal - initialAssets;
       const todayPnlPercent = initialAssets > 0 ? (todayPnl / initialAssets) * 100 : 0;
@@ -1762,6 +1882,116 @@ simulation: {
       bollLower[i] = mean - 2 * std;
     }
 
+    // KDJ(9, 3, 3) — random walk-index style. Needs high/low too.
+    const kdjK: (number | null)[] = new Array(n).fill(null);
+    const kdjD: (number | null)[] = new Array(n).fill(null);
+    const kdjJ: (number | null)[] = new Array(n).fill(null);
+    const highs = state.klines.map(k => k.high);
+    const lows = state.klines.map(k => k.low);
+    let prevK = 50, prevD = 50;
+    for (let i = 0; i < n; i++) {
+      if (i + 1 < 9) continue;
+      const start = i + 1 - 9;
+      const sliceHigh = Math.max(...highs.slice(start, i + 1));
+      const sliceLow = Math.min(...lows.slice(start, i + 1));
+      const rsv = sliceHigh === sliceLow ? 0 : ((closes[i] - sliceLow) / (sliceHigh - sliceLow)) * 100;
+      const k = (2 * prevK + rsv) / 3;
+      const d = (2 * prevD + k) / 3;
+      const j = 3 * k - 2 * d;
+      kdjK[i] = k; kdjD[i] = d; kdjJ[i] = j;
+      prevK = k; prevD = d;
+    }
+
+    // WR(14) — Williams %R. Range 0..-100; render in -100..0 in UI.
+    const wrSeries: (number | null)[] = new Array(n).fill(null);
+    for (let i = 13; i < n; i++) {
+      const start = i + 1 - 14;
+      const hh = Math.max(...highs.slice(start, i + 1));
+      const ll = Math.min(...lows.slice(start, i + 1));
+      wrSeries[i] = hh === ll ? 0 : ((hh - closes[i]) / (hh - ll)) * -100;
+    }
+
+    // DMI / ADX (14) — needs +DM/-DM/TR, smoothed via Wilder.
+    const pdiSeries: (number | null)[] = new Array(n).fill(null);
+    const mdiSeries: (number | null)[] = new Array(n).fill(null);
+    const adxSeries: (number | null)[] = new Array(n).fill(null);
+    const adxrSeries: (number | null)[] = new Array(n).fill(null);
+    if (n >= 15) {
+      const tr: number[] = new Array(n).fill(0);
+      const plusDM: number[] = new Array(n).fill(0);
+      const minusDM: number[] = new Array(n).fill(0);
+      for (let i = 1; i < n; i++) {
+        const up = highs[i] - highs[i - 1];
+        const dn = lows[i - 1] - lows[i];
+        plusDM[i] = up > dn && up > 0 ? up : 0;
+        minusDM[i] = dn > up && dn > 0 ? dn : 0;
+        tr[i] = Math.max(
+          highs[i] - lows[i],
+          Math.abs(highs[i] - closes[i - 1]),
+          Math.abs(lows[i] - closes[i - 1]),
+        );
+      }
+      // Wilder smoothing over 14 periods
+      const period = 14;
+      const smooth = (arr: number[]) => {
+        const out: (number | null)[] = new Array(n).fill(null);
+        let acc = 0;
+        for (let i = 1; i <= period && i < n; i++) acc += arr[i];
+        if (period < n) out[period] = acc;
+        for (let i = period + 1; i < n; i++) {
+          acc = acc - acc / period + arr[i];
+          out[i] = acc;
+        }
+        return out;
+      };
+      const trS = smooth(tr);
+      const pdmS = smooth(plusDM);
+      const mdmS = smooth(minusDM);
+      for (let i = period; i < n; i++) {
+        const t = trS[i] as number;
+        if (t === 0) continue;
+        const pdi = (pdmS[i] as number) / t * 100;
+        const mdi = (mdmS[i] as number) / t * 100;
+        pdiSeries[i] = pdi;
+        mdiSeries[i] = mdi;
+      }
+      // ADX: avg of last 14 DX values, with Wilder smoothing
+      const dxArr: (number | null)[] = new Array(n).fill(null);
+      for (let i = period; i < n; i++) {
+        const p = pdiSeries[i] as number;
+        const m = mdiSeries[i] as number;
+        dxArr[i] = p + m === 0 ? 0 : (Math.abs(p - m) / (p + m)) * 100;
+      }
+      // First ADX at i = 2*period = 28
+      let adxAcc = 0;
+      for (let i = period; i < 2 * period && i < n; i++) adxAcc += (dxArr[i] as number);
+      if (2 * period <= n - 1) {
+        adxSeries[2 * period] = adxAcc / period;
+        for (let i = 2 * period + 1; i < n; i++) {
+          adxSeries[i] = ((adxSeries[i - 1] as number) * (period - 1) + (dxArr[i] as number)) / period;
+        }
+      }
+      // ADXR = (ADX[i] + ADX[i-period]) / 2
+      for (let i = 2 * period; i < n; i++) {
+        const prev = adxSeries[i - period];
+        if (prev !== null) adxrSeries[i] = ((adxSeries[i] as number) + prev) / 2;
+      }
+    }
+
+    // VR(24) — Volume Ratio. Needs volume per kline.
+    const vrSeries: (number | null)[] = new Array(n).fill(null);
+    for (let i = 23; i < n; i++) {
+      const slice = state.klines.slice(i - 23, i + 1);
+      let upVol = 0, dnVol = 0, eqVol = 0;
+      for (const k of slice) {
+        if (k.close > k.open) upVol += k.volume;
+        else if (k.close < k.open) dnVol += k.volume;
+        else eqVol += k.volume;
+      }
+      const denom = (dnVol + eqVol / 2);
+      vrSeries[i] = denom === 0 ? null : ((upVol + eqVol / 2) / denom) * 100;
+    }
+
     // Latest snapshot (scalar)
     const last = (s: (number | null)[]) => s[n - 1] ?? 0;
     const lastBar = last(barSeries);
@@ -1772,6 +2002,10 @@ simulation: {
       macd: { diff: last(diffSeries), dea: last(deaSeries), bar: lastBar },
       rsi: last(rsiSeries),
       boll: { upper: last(bollUpper), middle: last(bollMid), lower: last(bollLower) },
+      kdj: { k: last(kdjK), d: last(kdjD), j: last(kdjJ) },
+      wr: last(wrSeries),
+      dmi: { pdi: last(pdiSeries), mdi: last(mdiSeries), adx: last(adxSeries), adxr: last(adxrSeries) },
+      vr: last(vrSeries),
     };
 
     const indicatorSeries: IndicatorSeries = {
@@ -1781,6 +2015,10 @@ simulation: {
       macd: { diff: diffSeries, dea: deaSeries, bar: barSeries },
       rsi: rsiSeries,
       boll: { upper: bollUpper, middle: bollMid, lower: bollLower },
+      kdj: { k: kdjK, d: kdjD, j: kdjJ },
+      wr: wrSeries,
+      dmi: { pdi: pdiSeries, mdi: mdiSeries, adx: adxSeries, adxr: adxrSeries },
+      vr: vrSeries,
     };
 
     set({ indicators, indicatorSeries });
@@ -1807,7 +2045,21 @@ simulation: {
     const state = get();
     const pool = state.newsPool;
     if (!pool.length) return;
-    const item = pool[Math.floor(Math.random() * pool.length)];
+
+    // If a REAL insider tip is still active, bias this news to match its locked
+    // direction so the tip proves accurate, then consume the tip.
+    const tip = state.pendingInsiderTip;
+    const tipActive = !!tip && state.currentTick <= tip.expiresTick;
+    let item: typeof pool[number];
+    if (tip && tipActive) {
+      const wanted = tip.direction === 'up' ? 'bullish' : 'bearish';
+      const matches = pool.filter((p) => p.sentiment === wanted);
+      item = matches.length
+        ? matches[Math.floor(Math.random() * matches.length)]
+        : pool[Math.floor(Math.random() * pool.length)];
+    } else {
+      item = pool[Math.floor(Math.random() * pool.length)];
+    }
 
     let priceMultiplier = 1;
     if (item.sentiment === 'bullish') priceMultiplier = 1 + 0.001 + Math.random() * 0.004;
@@ -1833,6 +2085,8 @@ simulation: {
       news: [newsItem, ...state.news].slice(0, 30),
       currentQuote: { ...state.currentQuote, price: newPrice, change: newChange, changePercent: newChangePct, timestamp: Date.now() },
       stockPrices: { ...state.stockPrices, [state.currentQuote.symbol]: newPrice },
+      // Consume the insider tip once it has driven a news event.
+      pendingInsiderTip: tipActive ? null : state.pendingInsiderTip,
     });
 
     if (item.sentiment !== 'neutral') {

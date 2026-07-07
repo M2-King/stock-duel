@@ -19,11 +19,6 @@ export default function Watchlist() {
     selectSymbol(symbol);
   };
   
-  const totalValue = watchlistStocks.reduce((sum, s) => {
-    if (s.symbol === currentQuote.symbol) sum += s.price * (currentQuote.volume / 100);
-    return sum;
-  }, 0);
-  
   const winners = watchlistStocks.filter(s => s.changePercent > 0).length;
   const losers = watchlistStocks.filter(s => s.changePercent < 0).length;
   

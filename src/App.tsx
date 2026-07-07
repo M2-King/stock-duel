@@ -74,10 +74,18 @@ function App() {
 
   const { role, gameStatus, endMatch, startSimulation, stopSimulation } = useGameStore();
 
-  // Update currentSection in store
+  // Mirror App section <-> store (sidebar uses local state; pages use store.setSection)
   useEffect(() => {
     useGameStore.setState({ currentSection: section });
   }, [section]);
+
+  useEffect(() => {
+    return useGameStore.subscribe((state, prev) => {
+      if (state.currentSection !== prev.currentSection) {
+        setSection(state.currentSection as NavSection);
+      }
+    });
+  }, []);
 
   // Tick engine lifecycle
   useEffect(() => {

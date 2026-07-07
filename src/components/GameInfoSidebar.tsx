@@ -44,7 +44,6 @@ export default function GameInfoSidebar() {
     useGameStore.getState().showToast(bookmarked ? '已取消收藏' : '已收藏当前 Black Swan 概率', 'info');
   };
 
-  const myPlayer = players.find(p => p.role === role);
   const opponents = players.filter(p => p.role !== role);
 
   return (

@@ -11,6 +11,31 @@
   overflow: hidden;
 }
 
+.regulator-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(420px, 1fr);
+  gap: var(--space-3);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.regulator-chart {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.regulator-chart > .market-chart {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+@media (max-width: 1100px) {
+  .regulator-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
 .regulator-stats-row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
