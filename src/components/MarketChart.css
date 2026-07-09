@@ -1,3 +1,7 @@
+.mc-crosshair {
+  pointer-events: none;
+}
+
 .market-chart {
   display: flex;
   flex-direction: column;

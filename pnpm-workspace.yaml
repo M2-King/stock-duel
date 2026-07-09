@@ -1,2 +1,10 @@
+packages:
+  - 'apps/*'
+
+# sql.js is pure JS + WASM, so no native build step is required for the DB layer.
+onlyBuiltDependencies:
+  - '@nestjs/core'
+
 allowBuilds:
+  '@nestjs/core': true
   esbuild: true

@@ -20,7 +20,7 @@ const roleIcon: Record<Role, string> = {
 };
 
 export default function SettlementModal({ open, onClose, onPlayAgain }: SettlementModalProps) {
-  const { role, players, simulation, holdings, cash, currentQuote, totalTradeCount, bestTradePnl } = useGameStore();
+  const { role, players, simulation, holdings, cash, currentQuote, totalTradeCount, bestTradePnl, justiceScore } = useGameStore();
 
   if (!open) return null;
 
@@ -112,6 +112,16 @@ export default function SettlementModal({ open, onClose, onPlayAgain }: Settleme
               <div className="stat-label">当前股价</div>
               <div className="stat-value mono">¥{currentQuote.price.toFixed(2)}</div>
             </div>
+            {role === 'regulator' && (
+              <div className="stat-item">
+                <div className="stat-label">正义分</div>
+                <div className="stat-value mono">
+                  <span className={justiceScore > 50 ? 'up' : justiceScore < 0 ? 'down' : ''}>
+                    {justiceScore} {justiceScore > 50 ? '· 胜利' : justiceScore < 0 ? '· 失败' : '· 平局'}
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
         

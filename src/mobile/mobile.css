@@ -1,0 +1,776 @@
+/* =============================================================
+   移动端样式 — 全部用现有 CSS 变量，< 768px 启用
+   调色板：黑底白字，A 股红涨绿跌
+   ============================================================= */
+
+.m-app {
+  --m-bg: var(--bg-base);
+  --m-surface: var(--bg-card);
+  --m-surface-2: var(--bg-elevated);
+  --m-border: var(--border-subtle);
+  --m-text: var(--text-primary);
+  --m-text-2: var(--text-secondary);
+  --m-text-3: var(--text-tertiary);
+  --m-up: var(--price-up);
+  --m-down: var(--price-down);
+  --m-accent: var(--accent);
+
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: var(--m-bg);
+  color: var(--m-text);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
+/* ---- Page container with bottom-nav safe area ---- */
+.m-page {
+  flex: 1 1 auto;
+  padding-bottom: calc(64px + env(safe-area-inset-bottom));
+  min-height: 0;
+}
+
+/* ============================================================
+   Bottom nav
+   ============================================================ */
+.m-bottom-nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(64px + env(safe-area-inset-bottom));
+  padding-bottom: env(safe-area-inset-bottom);
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  background: rgba(10, 10, 10, 0.94);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-top: 1px solid var(--m-border);
+  z-index: var(--z-sticky);
+}
+
+.m-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 56px;
+  background: transparent;
+  border: none;
+  color: var(--m-text-3);
+  cursor: pointer;
+  transition: color var(--transition-fast), transform var(--transition-fast);
+  -webkit-appearance: none;
+  appearance: none;
+}
+.m-tab:active { transform: scale(0.94); }
+.m-tab.active { color: var(--m-accent); }
+.m-tab.trade { color: var(--m-text-3); }
+.m-tab.trade.active { color: var(--m-accent); }
+
+.m-tab-icon {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+}
+.m-tab.trade .m-tab-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 18px;
+  background: var(--m-text);
+  margin-top: -22px;
+  color: var(--m-bg);
+  box-shadow: 0 6px 20px rgba(255,255,255,0.16);
+}
+.m-tab.trade.active .m-tab-icon {
+  background: var(--m-text);
+  color: var(--m-bg);
+  transform: translateY(-2px);
+}
+
+.m-tab-label {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1;
+}
+.m-tab.trade .m-tab-label { margin-top: 2px; }
+
+.m-tab-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ef4444;
+  box-shadow: 0 0 0 2px var(--m-bg);
+}
+.m-tab-red-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--price-up);
+}
+
+/* ============================================================
+   Typography helpers
+   ============================================================ */
+.m-page-title {
+  font-size: var(--text-2xl);
+  font-weight: var(--font-bold);
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+.m-page-subtitle {
+  font-size: var(--text-xs);
+  color: var(--m-text-3);
+  font-family: var(--font-body);
+}
+.m-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.m-up   { color: var(--m-up); }
+.m-down { color: var(--m-down); }
+.m-mute { color: var(--m-text-3); }
+
+/* ============================================================
+   Card primitive
+   ============================================================ */
+.m-card {
+  background: var(--m-surface);
+  border: 1px solid var(--m-border);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+.m-card-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: var(--text-sm);
+  padding: 10px 0;
+}
+.m-card-row + .m-card-row {
+  border-top: 1px solid var(--m-border);
+}
+.m-card-row .label {
+  color: var(--m-text-3);
+}
+.m-card-row .value {
+  color: var(--m-text);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.m-section-title {
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  margin: 18px 16px 10px;
+  letter-spacing: -0.01em;
+}
+
+/* ============================================================
+   Buttons (44px min)
+   ============================================================ */
+.m-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 8px;
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: transform var(--transition-fast), background var(--transition-fast);
+  -webkit-appearance: none;
+  appearance: none;
+}
+.m-btn:active { transform: scale(0.97); }
+.m-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.m-btn-primary {
+  background: var(--m-accent);
+  color: var(--m-bg);
+}
+.m-btn-primary:hover:not(:disabled) { background: rgba(255,255,255,0.88); }
+.m-btn-danger { background: var(--price-up); color: #fff; }
+.m-btn-ghost {
+  background: transparent;
+  color: var(--m-text-2);
+  border-color: var(--m-border);
+}
+.m-btn-up   { background: rgba(220,38,38,0.14);   color: var(--m-up); }
+.m-btn-down { background: rgba(22,163,74,0.14);   color: var(--m-down); }
+.m-btn-block { width: 100%; }
+
+/* ============================================================
+   Toast
+   ============================================================ */
+.m-toast {
+  position: fixed;
+  top: 14px;
+  left: 16px;
+  right: 16px;
+  z-index: 999;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  background: var(--m-surface-2);
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  font-size: var(--text-sm);
+  color: var(--m-text);
+  box-shadow: 0 12px 32px rgba(0,0,0,0.45);
+  animation: m-slide-down 220ms ease-out;
+}
+.m-toast-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--m-text-2);
+  flex-shrink: 0;
+}
+.m-toast-success .m-toast-dot { background: var(--color-success); }
+.m-toast-warning .m-toast-dot { background: var(--color-warning); }
+.m-toast-info    .m-toast-dot { background: var(--color-info); }
+.m-toast-danger  .m-toast-dot { background: var(--color-danger); }
+
+@keyframes m-slide-down {
+  from { transform: translateY(-12px); opacity: 0; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+
+/* ============================================================
+   Page header
+   ============================================================ */
+.m-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 12px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), transparent);
+}
+.m-page-header-left { flex: 1 1 auto; min-width: 0; }
+.m-page-header-right {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* ============================================================
+   Hero asset card (Home)
+   ============================================================ */
+.m-hero {
+  margin: 12px 16px 0;
+  padding: 16px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(220,38,38,0.10), rgba(22,163,74,0.06) 60%, rgba(255,255,255,0.03));
+  border: 1px solid var(--m-border);
+  position: relative;
+  overflow: hidden;
+}
+.m-hero:before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 0% 0%, rgba(220,38,38,0.10), transparent 60%);
+  pointer-events: none;
+}
+.m-hero-label {
+  font-size: var(--text-xs);
+  color: var(--m-text-3);
+  margin-bottom: 6px;
+}
+.m-hero-value {
+  font-size: 32px;
+  font-weight: var(--font-bold);
+  letter-spacing: -0.02em;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.m-hero-meta {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+}
+.m-hero-meta-col {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.m-hero-meta-label {
+  font-size: 11px;
+  color: var(--m-text-3);
+}
+.m-hero-meta-value {
+  font-size: 13px;
+  font-weight: var(--font-semibold);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+   Mini sparkline (Home)
+   ============================================================ */
+.m-spark {
+  margin-top: 8px;
+  height: 56px;
+  width: 100%;
+  display: block;
+}
+
+/* ============================================================
+   Action group (Markets / Trade)
+   ============================================================ */
+.m-action-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  padding: 0 16px;
+}
+.m-action-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 4px;
+  background: var(--m-surface);
+  border: 1px solid var(--m-border);
+  border-radius: 12px;
+  cursor: pointer;
+  min-height: 68px;
+}
+.m-action-item:active { transform: scale(0.97); }
+.m-action-icon {
+  width: 28px; height: 28px;
+  display: grid; place-items: center;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.05);
+  color: var(--m-text-2);
+  font-size: 16px;
+}
+.m-action-label {
+  font-size: 11px;
+  color: var(--m-text-2);
+}
+
+/* ============================================================
+   Stock cell (used in list)
+   ============================================================ */
+.m-list {
+  margin: 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.m-list-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--m-border);
+  cursor: pointer;
+  min-height: 56px;
+}
+.m-list-item:last-child { border-bottom: none; }
+.m-list-left { min-width: 0; }
+.m-list-sym {
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  letter-spacing: -0.01em;
+}
+.m-list-name {
+  font-size: var(--text-xs);
+  color: var(--m-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+.m-list-right {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.m-list-price {
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  letter-spacing: -0.01em;
+}
+.m-list-pct {
+  font-size: var(--text-xs);
+  margin-top: 2px;
+}
+
+/* ============================================================
+   Tag / badge
+   ============================================================ */
+.m-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.06);
+  color: var(--m-text-2);
+  white-space: nowrap;
+}
+.m-tag-dealer  { background: rgba(167,139,250,0.16); color: var(--role-dealer); }
+.m-tag-retail  { background: rgba(96,165,250,0.16);  color: var(--role-retail); }
+.m-tag-reg     { background: rgba(251,146,60,0.16);  color: var(--role-regulator); }
+.m-tag-up      { background: rgba(220,38,38,0.16);   color: var(--m-up); }
+.m-tag-down    { background: rgba(22,163,74,0.16);   color: var(--m-down); }
+
+/* ============================================================
+   Form (Trade page)
+   ============================================================ */
+.m-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.m-field-label {
+  font-size: 11px;
+  color: var(--m-text-3);
+}
+.m-input, .m-select {
+  min-height: 44px;
+  background: var(--m-surface);
+  border: 1px solid var(--m-border);
+  border-radius: 8px;
+  padding: 0 14px;
+  font-size: var(--text-base);
+  color: var(--m-text);
+  width: 100%;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.m-input:focus, .m-select:focus {
+  border-color: var(--border-accent);
+}
+
+.m-segmented {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  background: var(--m-surface);
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid var(--m-border);
+}
+.m-segmented-item {
+  min-height: 40px;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--m-text-3);
+  border-radius: 8px;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+}
+.m-segmented-item.active {
+  background: var(--m-text);
+  color: var(--m-bg);
+  font-weight: 600;
+}
+
+/* ============================================================
+   Sparkline path color
+   ============================================================ */
+.m-spark-up   { stroke: var(--m-up); }
+.m-spark-down { stroke: var(--m-down); }
+.m-spark-flat { stroke: var(--m-text-3); }
+
+/* ============================================================
+   Trading chart (mobile)
+   ============================================================ */
+.m-chart-wrap {
+  margin: 12px 16px 0;
+  height: 220px;
+  background: var(--m-surface);
+  border: 1px solid var(--m-border);
+  border-radius: 12px;
+  padding: 8px;
+  position: relative;
+  overflow: hidden;
+}
+.m-chart-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+/* ============================================================
+   Modal (Match / Settlement)
+   ============================================================ */
+.m-modal-shade {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: var(--z-modal);
+  animation: m-fade 200ms ease-out;
+}
+@keyframes m-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.m-modal-card {
+  width: 100%;
+  max-width: 360px;
+  background: var(--m-surface-2);
+  border: 1px solid var(--border-default);
+  border-radius: 16px;
+  padding: 24px 22px;
+  box-shadow: 0 24px 48px rgba(0,0,0,0.5);
+}
+.m-modal-title {
+  font-size: 20px;
+  font-weight: 700;
+  text-align: center;
+  margin: 0 0 4px;
+}
+.m-modal-subtitle {
+  font-size: 13px;
+  color: var(--m-text-3);
+  text-align: center;
+  margin: 0 0 18px;
+}
+.m-modal-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  padding: 14px;
+  background: rgba(255,255,255,0.04);
+  border-radius: 10px;
+  margin: 14px 0 18px;
+}
+.m-modal-stats .label {
+  font-size: 11px;
+  color: var(--m-text-3);
+  margin-bottom: 4px;
+}
+.m-modal-stats .value {
+  font-size: 16px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+
+/* ============================================================
+   Skeleton helper
+   ============================================================ */
+.m-skel {
+  background: linear-gradient(90deg, rgba(255,255,255,0.04), rgba(255,255,255,0.08), rgba(255,255,255,0.04));
+  background-size: 200% 100%;
+  animation: m-shimmer 1.4s linear infinite;
+  border-radius: 6px;
+}
+@keyframes m-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* ============================================================
+   Role pill
+   ============================================================ */
+.m-role-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.m-role-pill .dot {
+  width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+}
+
+/* ============================================================
+   Status banner
+   ============================================================ */
+.m-status-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 16px 12px;
+  padding: 10px 14px;
+  background: rgba(34,197,94,0.10);
+  border: 1px solid rgba(34,197,94,0.30);
+  border-radius: 10px;
+  font-size: 12px;
+  color: var(--m-text-2);
+}
+.m-status-banner .pulse {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 8px #22c55e;
+  animation: pulse 1.5s infinite;
+}
+
+/* ============================================================
+   Markets page extras
+   ============================================================ */
+.m-markets-indices {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  padding: 0 16px;
+  margin-bottom: 10px;
+}
+.m-markets-idx {
+  background: var(--m-surface);
+  border: 1px solid var(--m-border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  text-align: center;
+}
+.m-markets-idx-name { font-size: 10px; color: var(--m-text-3); margin-bottom: 2px; }
+.m-markets-idx-val  { font-size: 13px; font-weight: 700; font-family: var(--font-mono); }
+.m-markets-idx-chg  { font-size: 10px; margin-top: 2px; font-family: var(--font-mono); }
+
+.m-segments-wrap {
+  overflow-x: auto;
+  margin: 8px 16px 10px;
+  scrollbar-width: none;
+}
+.m-segments-wrap::-webkit-scrollbar { display: none; }
+.m-segments {
+  display: inline-flex;
+  gap: 6px;
+  background: var(--m-surface);
+  padding: 4px;
+  border-radius: 9999px;
+  border: 1px solid var(--m-border);
+}
+.m-segment {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--m-text-3);
+  background: transparent;
+  border: none;
+  border-radius: 9999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.m-segment.active {
+  background: var(--m-text);
+  color: var(--m-bg);
+  font-weight: 600;
+}
+
+.m-markets-active {
+  margin: 0 16px 12px;
+  background: var(--m-surface);
+  border: 1px solid var(--m-border);
+  border-radius: 14px;
+  padding: 14px;
+}
+.m-markets-active-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.m-markets-active-price {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+/* ============================================================
+   Dealer tools
+   ============================================================ */
+.m-dealer-tools { padding-bottom: 12px; }
+.m-tools-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  padding: 0 16px;
+}
+.m-tool-card {
+  background: var(--m-surface);
+  border: 1px solid var(--m-border);
+  border-radius: 12px;
+  padding: 12px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.m-tool-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  border-radius: 12px 12px 0 0;
+  background: var(--accent);
+}
+.m-tool-icon {
+  width: 32px; height: 32px;
+  border-radius: 9px;
+  display: grid; place-items: center;
+  font-size: 16px;
+  margin-bottom: 8px;
+}
+.m-tool-name {
+  display: flex;
+  align-items: baseline;
+  margin-bottom: 2px;
+}
+.m-tool-cost {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 4px 0;
+}
+.m-tool-slider {
+  width: 100%;
+  margin-top: 4px;
+}
+.m-tool-slider:disabled { opacity: 0.4; }
+.m-tool-use {
+  min-height: 40px;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.m-tool-use:disabled { cursor: not-allowed; }
+
+/* ============================================================
+   Responsive — make sure nothing leaks outside 768px on desktop
+   ============================================================ */
+@media (min-width: 769px) {
+  .m-app { display: none !important; }
+}

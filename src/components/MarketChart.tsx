@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useCallback, type WheelEvent, type PointerEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback, type WheelEvent, type PointerEvent, type MouseEvent } from 'react';
 import { useGameStore, type IndicatorSeries } from '../store/gameStore';
 import './MarketChart.css';
 
@@ -252,6 +252,158 @@ function computeIntradayIndicators(points: number[]): IntradayIndicatorData {
   };
 }
 
+interface ChartPadding {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+interface CrosshairHover {
+  index: number;
+  x: number;
+  y: number;
+  price: number;
+}
+
+/** Map intraday index (0..window-1) to A-share clock string (09:30–11:30, 13:00–15:00). */
+function intradayTimeFromIndex(index: number, windowSize = 120): string {
+  const ratio = index / Math.max(windowSize - 1, 1);
+  if (ratio <= 0.5) {
+    const minutesFromOpen = ratio * 2 * 120;
+    const total = 9 * 60 + 30 + minutesFromOpen;
+    const hh = Math.floor(total / 60);
+    const mm = Math.round(total % 60);
+    return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+  }
+  const afternoonRatio = (ratio - 0.5) * 2;
+  const minutesFromPm = afternoonRatio * 120;
+  const total = 13 * 60 + minutesFromPm;
+  const hh = Math.floor(total / 60);
+  const mm = Math.round(total % 60);
+  return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
+function candleHoverTimeLabel(period: Period, index: number, total: number, timestamp?: number): string {
+  if (timestamp !== undefined && timestamp > 1_000_000_000_000) {
+    const d = new Date(timestamp);
+    const mo = d.getMonth() + 1;
+    const day = d.getDate();
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    return `${mo}/${day} ${hh}:${mm}`;
+  }
+  if (period === '1W') {
+    const days = ['一', '二', '三', '四', '五'];
+    return `周${days[index % days.length] ?? index + 1}`;
+  }
+  if (period === '1M') return `${Math.min(index + 1, 31)}日`;
+  const labels = xAxisLabels(period, total);
+  if (!labels.length) return `#${index + 1}`;
+  let nearest = labels[0];
+  let best = Math.abs(labels[0].idx - index);
+  for (const lbl of labels) {
+    const d = Math.abs(lbl.idx - index);
+    if (d < best) { best = d; nearest = lbl; }
+  }
+  return nearest.label;
+}
+
+function snapIndexFromMouseX(mouseX: number, padding: ChartPadding, innerW: number, count: number, denom: number): number {
+  if (count <= 0 || innerW <= 0) return 0;
+  const raw = ((mouseX - padding.left) / innerW) * denom;
+  return Math.round(Math.max(0, Math.min(count - 1, raw)));
+}
+
+function CrosshairOverlay({
+  hover, width, height, padding, mainTop, mainH, timeLabel, ohlc, dayOpen,
+}: {
+  hover: CrosshairHover;
+  width: number;
+  height: number;
+  padding: ChartPadding;
+  mainTop: number;
+  mainH: number;
+  timeLabel: string;
+  ohlc?: { open: number; high: number; low: number; close: number };
+  dayOpen?: number;
+}) {
+  const priceColor = ohlc
+    ? (ohlc.close >= ohlc.open ? 'var(--price-up)' : 'var(--price-down)')
+    : (dayOpen !== undefined && hover.price >= dayOpen ? 'var(--price-up)' : 'var(--price-down)');
+
+  const tipX = hover.x + 10;
+  const tipY = hover.y - 28;
+  const tipW = 108;
+  const tipH = 36;
+
+  const ohlcLines = ohlc
+    ? [
+        { label: '开', val: ohlc.open, color: 'rgba(255,255,255,0.75)' },
+        { label: '高', val: ohlc.high, color: 'var(--price-up)' },
+        { label: '低', val: ohlc.low, color: 'var(--price-down)' },
+        { label: '收', val: ohlc.close, color: priceColor },
+      ]
+    : [{ label: '价', val: hover.price, color: priceColor }];
+
+  const ohlcBoxW = ohlc ? 148 : 108;
+  const ohlcBoxH = ohlc ? 58 : 34;
+
+  return (
+    <g className="mc-crosshair" pointerEvents="none">
+      <line x1={hover.x} x2={hover.x} y1={mainTop} y2={mainTop + mainH}
+        stroke="rgba(255, 255, 255, 0.35)" strokeWidth={1} strokeDasharray="4 4" />
+      <line x1={padding.left} x2={width - padding.right} y1={hover.y} y2={hover.y}
+        stroke="rgba(255, 255, 255, 0.35)" strokeWidth={1} strokeDasharray="4 4" />
+
+      <rect x={width - padding.right} y={hover.y - 9} width={padding.right - 4} height={18}
+        fill={priceColor} rx={2} opacity={0.92} />
+      <text x={width - padding.right / 2} y={hover.y + 4} fill="#fff" fontSize={11} fontWeight={600}
+        fontFamily="ui-monospace, monospace" textAnchor="middle">{hover.price.toFixed(2)}</text>
+
+      <rect x={hover.x - 28} y={height - padding.bottom + 2} width={56} height={16}
+        fill="rgba(0,0,0,0.55)" stroke="rgba(255,255,255,0.15)" rx={2} />
+      <text x={hover.x} y={height - padding.bottom + 13} fill="rgba(255,255,255,0.75)" fontSize={10}
+        fontFamily="ui-monospace, monospace" textAnchor="middle">{timeLabel}</text>
+
+      <rect x={Math.min(tipX, width - tipW - 8)} y={Math.max(mainTop + 4, tipY)} width={tipW} height={tipH}
+        fill="rgba(0,0,0,0.72)" stroke="rgba(255,255,255,0.12)" rx={3} />
+      <text x={Math.min(tipX, width - tipW - 8) + 8} y={Math.max(mainTop + 18, tipY + 14)}
+        fill={priceColor} fontSize={11} fontWeight={600} fontFamily="ui-monospace, monospace">
+        {hover.price.toFixed(2)}
+      </text>
+      <text x={Math.min(tipX, width - tipW - 8) + 8} y={Math.max(mainTop + 30, tipY + 26)}
+        fill="rgba(255,255,255,0.65)" fontSize={10} fontFamily="ui-monospace, monospace">{timeLabel}</text>
+
+      <g>
+        <rect x={width - padding.right - ohlcBoxW - 4} y={mainTop + 4} width={ohlcBoxW} height={ohlcBoxH}
+          fill="rgba(0,0,0,0.45)" rx={3} />
+        {ohlc ? (
+          <>
+            {ohlcLines.map((row, i) => (
+              <text key={row.label} x={width - padding.right - ohlcBoxW + 6} y={mainTop + 16 + i * 13}
+                fill={row.color} fontSize={10} fontFamily="ui-monospace, monospace">
+                {`${row.label} ${row.val.toFixed(2)}`}
+              </text>
+            ))}
+            <text x={width - padding.right - ohlcBoxW + 6} y={mainTop + 16 + 4 * 13}
+              fill="rgba(255,255,255,0.55)" fontSize={9} fontFamily="ui-monospace, monospace">{timeLabel}</text>
+          </>
+        ) : (
+          <>
+            <text x={width - padding.right - ohlcBoxW + 6} y={mainTop + 18}
+              fill={priceColor} fontSize={10} fontFamily="ui-monospace, monospace">
+              {`价格 ${hover.price.toFixed(2)}`}
+            </text>
+            <text x={width - padding.right - ohlcBoxW + 6} y={mainTop + 32}
+              fill="rgba(255,255,255,0.55)" fontSize={9} fontFamily="ui-monospace, monospace">{timeLabel}</text>
+          </>
+        )}
+      </g>
+    </g>
+  );
+}
+
 function xAxisLabels(period: Period, count: number) {
   const labels: { idx: number; label: string }[] = [];
   if (period === '1D') {
@@ -281,10 +433,17 @@ export default function MarketChart({
   showIndicatorSelector = true,
   height,
 }: MarketChartProps) {
-  const { currentQuote, klines, timelineData } = useGameStore();
+  const { currentQuote, klines, timelineData, klinesBySymbol, timelineBySymbol, stockPrices } = useGameStore();
   const activeSymbol = symbol ?? currentQuote.symbol;
-  const isCurrentSymbol = activeSymbol === currentQuote.symbol;
-  const price = currentQuote.price;
+  const activeTimelineData = activeSymbol === currentQuote.symbol
+    ? timelineData
+    : (timelineBySymbol[activeSymbol] ?? []);
+  const activeKlines = activeSymbol === currentQuote.symbol
+    ? klines
+    : (klinesBySymbol[activeSymbol] ?? []);
+  const price = activeSymbol === currentQuote.symbol
+    ? currentQuote.price
+    : (stockPrices[activeSymbol] ?? currentQuote.price);
   const [period, setPeriod] = useState<Period>('1D');
   const [enabledIndicators, setEnabledIndicators] = useState<Set<IndicatorId>>(
     new Set(['MA', 'BOLL', 'KDJ']),
@@ -296,9 +455,8 @@ export default function MarketChart({
 
   const isIntraday = period === '1D';
 
-  const intradayPoints = useMemo(() => {
-    if (!isIntraday) return null;
-    if (isCurrentSymbol && timelineData.length > 0) return timelineData;
+  const intradayMockBase = useMemo(() => {
+    if (!isIntraday || activeTimelineData.length > 0) return null;
     const seed = `${activeSymbol}-1D-intraday`;
     let s = 0;
     for (let i = 0; i < seed.length; i++) s = (s * 31 + seed.charCodeAt(i)) >>> 0;
@@ -312,9 +470,19 @@ export default function MarketChart({
       p += noise + drift;
       points.push(p);
     }
-    points[points.length - 1] = price;
     return points;
-  }, [isIntraday, isCurrentSymbol, timelineData, activeSymbol, price]);
+  }, [isIntraday, activeTimelineData.length, activeSymbol, price]);
+
+  // intraday chart 的数据源：
+  //   - 当前选中的 symbol 有 timelineBySymbol 数据 → 直接用该 symbol 的真实序列
+  //   - 否则用 intradayMockBase（静态，仅在 activeSymbol / timelineData 长度变化时重算）
+  // 关键修复：非当前主标的也优先读它自己的 timelineBySymbol，不再无脑回退到静态 mock。
+  const intradayPoints = useMemo(() => {
+    if (!isIntraday) return null;
+    if (activeTimelineData.length > 0) return activeTimelineData;
+    if (!intradayMockBase) return null;
+    return intradayMockBase;
+  }, [isIntraday, activeTimelineData, intradayMockBase]);
 
   const periodCount: Record<Period, number> = { '1D': 0, '1W': 30, '1M': 60, '3M': 90, '1Y': 120, 'ALL': 180 };
   const mockCount = periodCount[period];
@@ -323,20 +491,33 @@ export default function MarketChart({
     [mockCount, price, activeSymbol, period],
   );
 
-  const candleSource = useMemo(() => [...mockCandles, ...klines], [mockCandles, klines]);
+  const candleSource = useMemo(
+    () => [...mockCandles, ...activeKlines],
+    [mockCandles, activeKlines],
+  );
   const totalCandles = candleSource.length;
-  // For intraday 1D, zoom is disabled — the chart already fits a 120-window.
-  // For K-line modes, zoomLevel controls how many candles show.
+  // 视口策略：使用 FIXED visibleCount（不随 totalCandles 增长），新数据从右进入。
+  // 这样 candle 间距恒定，X 轴不会因为聚合 K 线变多而整体压缩。
+  // user-pan: anchorIdx < 0 表示"跟随最新"，> 0 表示向左 pan 看历史。
+  const periodViewport: Record<Period, number> = {
+    '1D': 240, // intraday 用 points 的下表
+    '1W': 60,
+    '1M': 80,
+    '3M': 100,
+    '1Y': 120,
+    'ALL': 150,
+  };
+  // 分时图 (1D) 保持固定窗口，zoom 只对 K 线周期生效
   const effectiveZoom = isIntraday ? 1 : zoomLevel;
-  const visibleCount = isIntraday
+  const visibleCountRaw = isIntraday
     ? 120
-    : Math.max(20, Math.floor(totalCandles / effectiveZoom));
+    : Math.max(20, Math.floor(periodViewport[period] / effectiveZoom));
+  // clamp 不超过总量；保证老数据从左溢出而不挤压
+  const visibleCount = Math.min(visibleCountRaw, Math.max(20, totalCandles));
   const defaultAnchor = Math.max(0, totalCandles - visibleCount);
   const resolvedAnchor = anchorIdx < 0 ? defaultAnchor : Math.min(Math.max(0, anchorIdx), defaultAnchor);
   const visibleFrom = Math.max(0, resolvedAnchor);
-  const visibleTo = isIntraday
-    ? (intradayPoints?.length ?? 0)
-    : Math.min(totalCandles, visibleFrom + visibleCount);
+  const visibleTo = Math.min(totalCandles, visibleFrom + visibleCount);
 
   // Reset zoom + anchor when period or symbol changes
   useEffect(() => {
@@ -349,6 +530,7 @@ export default function MarketChart({
     return candleSource.slice(visibleFrom, visibleTo).map((k, i) => ({
       x: i,
       y: [k.open, k.close, k.low, k.high] as [number, number, number, number],
+      timestamp: k.timestamp,
     }));
   }, [candleSource, visibleFrom, visibleTo, isIntraday]);
 
@@ -459,13 +641,13 @@ export default function MarketChart({
           data={visibleCandles}
           lineData={visibleLineData}
           intradayPoints={isIntraday ? intradayPoints : null}
-          currentPrice={price}
           period={period}
           indicatorSeries={fullSeries}
           seriesOffset={indicatorOffset}
           enabledIndicators={enabledIndicators}
           effectiveZoom={effectiveZoom}
           totalCandles={totalCandles}
+          visibleCountRaw={visibleCountRaw}
           onZoomIn={zoomIn}
           onZoomOut={zoomOut}
           onPanOffset={(dx) => {
@@ -482,22 +664,28 @@ export default function MarketChart({
 
 /* ============== Pure SVG chart ============== */
 function CandlestickChart({
-  data, lineData, currentPrice, period, intradayPoints, indicatorSeries, seriesOffset = 0, enabledIndicators,
-  onZoomIn, onZoomOut, onPanOffset,
+  data, lineData, period, intradayPoints, indicatorSeries, seriesOffset = 0, enabledIndicators,
+  onZoomIn, onZoomOut, onPanOffset, visibleCountRaw,
 }: {
-  data: any[]; lineData: any[] | null; currentPrice: number; period: Period;
+  data: any[]; lineData: any[] | null; period: Period;
   intradayPoints: number[] | null;
   indicatorSeries: IndicatorSeries | null;
   seriesOffset?: number;
   enabledIndicators: Set<IndicatorId>;
   effectiveZoom: number;
   totalCandles: number;
+  visibleCountRaw: number;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onPanOffset: (delta: number) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    setHoverIndex(null);
+  }, [period, data.length, intradayPoints?.length]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -527,6 +715,7 @@ function CandlestickChart({
 
   const onPointerDown = useCallback((e: PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
+    setHoverIndex(null);
     dragRef.current = { active: true, startX: e.clientX };
     (e.target as Element).setPointerCapture?.(e.pointerId);
   }, []);
@@ -538,6 +727,32 @@ function CandlestickChart({
     if (Math.abs(dx) >= 8) onPanOffset(Math.round(-dx / 8));
   }, [onPanOffset]);
   const onPointerUp = useCallback(() => { dragRef.current.active = false; }, []);
+
+  const makeHoverHandlers = useCallback((
+    mainTop: number,
+    mainH: number,
+    count: number,
+    xDenom: number,
+    padding: ChartPadding,
+    innerW: number,
+  ) => ({
+    onMouseMove: (e: MouseEvent<HTMLDivElement>) => {
+      if (!containerRef.current || dragRef.current.active) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      if (
+        mouseY < mainTop || mouseY > mainTop + mainH
+        || mouseX < padding.left || mouseX > size.w - padding.right
+        || count <= 0
+      ) {
+        setHoverIndex(null);
+        return;
+      }
+      setHoverIndex(snapIndexFromMouseX(mouseX, padding, innerW, count, xDenom));
+    },
+    onMouseLeave: () => setHoverIndex(null),
+  }), [size.w]);
 
   const width = size.w;
   const height = size.h;
@@ -587,20 +802,32 @@ function CandlestickChart({
 
     const xScale = (i: number) => padding.left + (i / (WINDOW - 1)) * innerW;
     const open = points[0];
-    let minVal = Math.min(...points);
-    let maxVal = Math.max(...points);
-    if (hasBOLL) {
-      intra.boll.upper.forEach(v => { if (v !== null) maxVal = Math.max(maxVal, v); });
-      intra.boll.lower.forEach(v => { if (v !== null) minVal = Math.min(minVal, v); });
+    // Y 轴锚定到当日开盘价 (open)，并预留 ±5% 的固定跨度作为"正常波动带"。
+    // 这样 5% 的自然波动只占 Y 轴的一小段，1% 的拉升在视觉上就是 1%，不会被误判为 10%。
+    //   之前用窗口 min/max 自动 scale，120 点里 ±5% 波动吃满整个 Y 轴高度，
+    //   单根 K 线的 1% 涨幅占据 1/5 屏幕 → 监管模型和庄家都被"骗"了。
+    let minVal: number;
+    let maxVal: number;
+    {
+      const spanPct = 0.05;                  // 上下各 5% 共 10% 跨度（容纳正常波动）
+      const floorSpan = (open || 1) * spanPct;
+      const dataMin = Math.min(...points);
+      const dataMax = Math.max(...points);
+      // Y 轴范围 = max(±5%, 数据实际范围 + 余量)
+      const dataSpan = Math.max(0, dataMax - dataMin) * 1.15;
+      const span = Math.max(floorSpan, dataSpan);
+      minVal = open - span;
+      maxVal = open + span;
+      if (hasBOLL) {
+        intra.boll.upper.forEach(v => { if (v !== null) maxVal = Math.max(maxVal, v); });
+        intra.boll.lower.forEach(v => { if (v !== null) minVal = Math.min(minVal, v); });
+      }
+      if (hasMA) {
+        [...intra.ma5, ...intra.ma10, ...intra.ma20, ...intra.avgPrice].forEach(v => {
+          if (v !== null && typeof v === 'number') { minVal = Math.min(minVal, v); maxVal = Math.max(maxVal, v); }
+        });
+      }
     }
-    if (hasMA) {
-      [...intra.ma5, ...intra.ma10, ...intra.ma20, ...intra.avgPrice].forEach(v => {
-        if (v !== null && typeof v === 'number') { minVal = Math.min(minVal, v); maxVal = Math.max(maxVal, v); }
-      });
-    }
-    const padP = (maxVal - minVal) * 0.08 || maxVal * 0.005;
-    minVal -= padP;
-    maxVal += padP;
     const range = maxVal - minVal || 1;
     const yScale = (v: number) => mainTop + (1 - (v - minVal) / range) * mainH;
 
@@ -632,8 +859,7 @@ function CandlestickChart({
     };
 
     const linePath = points.map((v, i) => `${i === 0 ? 'M' : 'L'} ${xScale(i)} ${yScale(v)}`).join(' ');
-    const lastDataX = xScale(n - 1);
-    const areaPath = `${linePath} L ${lastDataX} ${mainTop + mainH} L ${xScale(0)} ${mainTop + mainH} Z`;
+    const areaPath = `${linePath} L ${xScale(n - 1)} ${mainTop + mainH} L ${xScale(0)} ${mainTop + mainH} Z`;
     const lastP = points[n - 1];
     const openY = yScale(open);
     const lineColor = lastP >= open ? 'var(--price-up)' : 'var(--price-down)';
@@ -650,8 +876,22 @@ function CandlestickChart({
 
     const lastOf = <T,>(arr: T[]) => arr[n - 1];
 
+    const hover = hoverIndex !== null && hoverIndex >= 0 && hoverIndex < n
+      ? {
+          index: hoverIndex,
+          x: xScale(hoverIndex),
+          y: yScale(points[hoverIndex]),
+          price: points[hoverIndex],
+        }
+      : null;
+    const hoverHandlers = makeHoverHandlers(mainTop, mainH, n, WINDOW - 1, padding, innerW);
+
     return (
-      <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'relative' }}>
+      <div
+        ref={containerRef}
+        style={{ width: '100%', height: '100%', position: 'relative' }}
+        {...hoverHandlers}
+      >
         <svg viewBox={`0 0 ${width} ${height}`} className="candlestick-svg" width={width} height={height} style={{ display: 'block' }}>
           <defs>
             <linearGradient id={areaGradId} x1="0" y1="0" x2="0" y2="1">
@@ -669,6 +909,32 @@ function CandlestickChart({
             stroke="rgba(255, 255, 255, 0.4)" strokeWidth={0.8} strokeDasharray="4 4" />
           <text x={width - padding.right + 4} y={openY + 4} fill="rgba(255, 255, 255, 0.6)" fontSize={10}
             fontFamily="ui-monospace, monospace" textAnchor="start">开盘 {open.toFixed(2)}</text>
+
+          {/* 涨跌停线（A 股 ±10%）— Y 轴外/外推延到视口外也保留半透明显示 */}
+          {(() => {
+            const upper = open * 1.10;
+            const lower = open * 0.90;
+            const upperY = yScale(upper);
+            const lowerY = yScale(lower);
+            return (
+              <g>
+                {/* 涨停线：红色实线 + 半透明色块 */}
+                <rect x={padding.left} y={Math.max(mainTop, upperY)} width={width - padding.left - padding.right} height={mainTop + mainH - Math.max(mainTop, upperY)}
+                  fill="rgba(220, 38, 38, 0.08)" />
+                <line x1={padding.left} x2={width - padding.right} y1={upperY} y2={upperY}
+                  stroke="rgba(220, 38, 38, 0.7)" strokeWidth={1} strokeDasharray="6 3" />
+                <text x={width - padding.right + 4} y={upperY + 4} fill="rgba(220, 38, 38, 0.9)" fontSize={10}
+                  fontFamily="ui-monospace, monospace" textAnchor="start" fontWeight={600}>↑ 涨停 {upper.toFixed(2)}</text>
+                {/* 跌停线：绿色实线 + 半透明色块 */}
+                <rect x={padding.left} y={lowerY} width={width - padding.left - padding.right} height={Math.min(mainTop + mainH, lowerY) - lowerY}
+                  fill="rgba(22, 163, 74, 0.08)" />
+                <line x1={padding.left} x2={width - padding.right} y1={lowerY} y2={lowerY}
+                  stroke="rgba(22, 163, 74, 0.7)" strokeWidth={1} strokeDasharray="6 3" />
+                <text x={width - padding.right + 4} y={lowerY + 4} fill="rgba(22, 163, 74, 0.9)" fontSize={10}
+                  fontFamily="ui-monospace, monospace" textAnchor="start" fontWeight={600}>↓ 跌停 {lower.toFixed(2)}</text>
+              </g>
+            );
+          })()}
 
           {/* BOLL overlay */}
           {hasBOLL && (
@@ -693,22 +959,6 @@ function CandlestickChart({
           <path d={areaPath} fill={`url(#${areaGradId})`} />
           <path d={linePath} stroke={lineColor} strokeWidth={1.5} fill="none"
             strokeLinejoin="round" strokeLinecap="round" />
-
-          {/* Current price crosshair */}
-          <line x1={lastDataX} x2={lastDataX} y1={mainTop} y2={mainTop + mainH}
-            stroke="rgba(255, 255, 255, 0.18)" strokeWidth={1} strokeDasharray="2 3" />
-          {(() => {
-            const y = yScale(currentPrice);
-            if (y < mainTop || y > mainTop + mainH) return null;
-            return (
-              <g>
-                <line x1={padding.left} x2={width - padding.right} y1={y} y2={y} stroke={lineColor} strokeWidth={0.8} strokeDasharray="3 3" opacity={0.6} />
-                <rect x={width - padding.right} y={y - 9} width={padding.right - 4} height={18} fill={lineColor} rx={2} />
-                <text x={width - padding.right / 2} y={y + 4} fill="#fff" fontSize={11} fontWeight={600}
-                  fontFamily="ui-monospace, monospace" textAnchor="middle">{currentPrice.toFixed(2)}</text>
-              </g>
-            );
-          })()}
 
           {/* Main pane legend */}
           {hasMA && (() => {
@@ -735,6 +985,27 @@ function CandlestickChart({
             <text key={`yl-${i}`} x={width - padding.right + 4} y={g.y + 4} fill="rgba(255, 255, 255, 0.45)" fontSize={10}
               fontFamily="ui-monospace, monospace" textAnchor="start">{g.price.toFixed(2)}</text>
           ))}
+
+          {/* 最新价 + 距开盘 % — 庄家最该看的就是这个，
+              1% 涨幅在屏幕上是 1%，不再是 10% */}
+          {(() => {
+            const pct = open > 0 ? ((lastP - open) / open) * 100 : 0;
+            const yL = yScale(lastP);
+            const sign = pct >= 0 ? '+' : '−';
+            const pctStr = `${sign}${Math.abs(pct).toFixed(2)}%`;
+            return (
+              <g>
+                <line x1={padding.left} x2={width - padding.right} y1={yL} y2={yL}
+                  stroke={lineColor} strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
+                <rect x={width - padding.right + 2} y={yL - 9} width={56} height={18}
+                  fill={lineColor === 'var(--price-up)' ? 'rgba(220, 38, 38, 0.85)' : 'rgba(22, 163, 74, 0.85)'} rx={2} />
+                <text x={width - padding.right + 30} y={yL + 4} fill="#fff" fontSize={10}
+                  fontFamily="ui-monospace, monospace" textAnchor="middle" fontWeight={600}>
+                  {pctStr}
+                </text>
+              </g>
+            );
+          })()}
 
           {/* Lunch break divider */}
           {(() => {
@@ -885,6 +1156,19 @@ function CandlestickChart({
                 fontFamily="ui-monospace, monospace" textAnchor="middle">{lbl.label}</text>
             );
           })}
+
+          {hover && (
+            <CrosshairOverlay
+              hover={hover}
+              width={width}
+              height={height}
+              padding={padding}
+              mainTop={mainTop}
+              mainH={mainH}
+              timeLabel={intradayTimeFromIndex(hover.index, WINDOW)}
+              dayOpen={open}
+            />
+          )}
         </svg>
       </div>
     );
@@ -919,10 +1203,10 @@ function CandlestickChart({
   };
   subs.forEach((s, i) => { subTops[s.kind] = mainTop + mainH + 2 + i * (subH + 2); });
 
-  // Price range: include OHLC of visible window + indicator extents
+  // Price range: OHLC of visible window + indicator extents (exclude live currentPrice to avoid Y-axis jitter)
   const allValues = data.flatMap(d => [d.y[0], d.y[1], d.y[2], d.y[3]]);
-  let minVal = Math.min(...allValues, currentPrice);
-  let maxVal = Math.max(...allValues, currentPrice);
+  let minVal = Math.min(...allValues);
+  let maxVal = Math.max(...allValues);
   if (hasBOLL && indicatorSeries) {
     indicatorSeries.boll.upper.forEach((v, i) => { if (v !== null && i >= seriesOffset && i < seriesOffset + data.length) maxVal = Math.max(maxVal, v); });
     indicatorSeries.boll.lower.forEach((v, i) => { if (v !== null && i >= seriesOffset && i < seriesOffset + data.length) minVal = Math.min(minVal, v); });
@@ -933,15 +1217,17 @@ function CandlestickChart({
   const range = maxVal - minVal;
 
   const n = data.length;
-  const xScale = (i: number) => padding.left + (n === 1 ? innerW / 2 : (i / (n - 1)) * innerW);
+  // 关键修复：x 坐标按固定视口宽度（visibleCountRaw）算 slot，不要用 data.length。
+  // 否则新增一根 candle 时 n 变大、(n-1) 变大，所有现有蜡烛集体左移 → "K 线整体向左平移"。
+  // 现在每个 slot 的 x 位置永久固定；新 candle 出现在最右 slot，最左 slot 的旧 candle 被替换掉。
+  // 数据少时右对齐（slotOffset > 0），左侧留出空白。
+  const slotW = innerW / Math.max(visibleCountRaw, 1);
+  const slotOffset = Math.max(0, visibleCountRaw - n);
+  const xScale = (i: number) => padding.left + (i + slotOffset + 0.5) * slotW;
   const yScale = (v: number) => mainTop + (1 - (v - minVal) / range) * mainH;
-  const slotW = innerW / Math.max(n, 1);
   const candleW = Math.max(2, Math.min(slotW * 0.72, 16));
 
   const gridLevels = [0.1, 0.3, 0.5, 0.7, 0.9].map(t => ({ y: mainTop + t * mainH, price: maxVal - t * range }));
-  const currentY = yScale(currentPrice);
-  const currentUp = currentPrice >= (data[0]?.y?.[0] ?? currentPrice);
-  const currentColor = currentUp ? 'var(--price-up)' : 'var(--price-down)';
 
   const buildPath = (series: (number | null)[]) => {
     let started = false;
@@ -975,6 +1261,25 @@ function CandlestickChart({
   // Last values (clipped to visible window) for the legend
   const lastInWindow = <T,>(arr: T[]) => arr[Math.min(arr.length - 1, seriesOffset + n - 1)];
 
+  const hover = hoverIndex !== null && hoverIndex >= 0 && hoverIndex < n
+    ? (() => {
+        const d = data[hoverIndex];
+        const open = d.y[0];
+        const close = d.y[1];
+        const low = d.y[2];
+        const high = d.y[3];
+        return {
+          index: hoverIndex,
+          x: xScale(hoverIndex),
+          y: yScale(close),
+          price: close,
+          ohlc: { open, high, low, close },
+          timestamp: d.timestamp as number | undefined,
+        };
+      })()
+    : null;
+  const hoverHandlers = makeHoverHandlers(mainTop, mainH, n, Math.max(visibleCountRaw - 1, 1), padding, innerW);
+
   return (
     <div
       ref={containerRef}
@@ -984,7 +1289,8 @@ function CandlestickChart({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
-      onPointerLeave={onPointerUp}
+      {...hoverHandlers}
+      onMouseLeave={() => { dragRef.current.active = false; setHoverIndex(null); }}
     >
       <svg viewBox={`0 0 ${width} ${height}`} className="candlestick-svg" width={width} height={height} style={{ display: 'block' }}>
         <defs>
@@ -1046,18 +1352,6 @@ function CandlestickChart({
             </g>
           );
         })}
-
-        {/* Current price tag in main pane */}
-        {currentPrice > 0 && currentY >= mainTop && currentY <= mainTop + mainH && (
-          <g>
-            <line x1={padding.left} x2={width - padding.right} y1={currentY} y2={currentY}
-              stroke={currentColor} strokeWidth={0.8} strokeDasharray="3 3" opacity={0.7} />
-            <rect x={width - padding.right} y={currentY - 9} width={padding.right - 4} height={18}
-              fill={currentColor} rx={2} />
-            <text x={width - padding.right / 2} y={currentY + 4} fill="#fff" fontSize={11} fontWeight={600}
-              fontFamily="ui-monospace, monospace" textAnchor="middle">{currentPrice.toFixed(2)}</text>
-          </g>
-        )}
 
         {/* Legend in main pane */}
         {indicatorSeries && (() => {
@@ -1192,6 +1486,19 @@ function CandlestickChart({
             );
           });
         })()}
+
+        {hover && (
+          <CrosshairOverlay
+            hover={hover}
+            width={width}
+            height={height}
+            padding={padding}
+            mainTop={mainTop}
+            mainH={mainH}
+            timeLabel={candleHoverTimeLabel(period, hover.index, n, hover.timestamp)}
+            ohlc={hover.ohlc}
+          />
+        )}
       </svg>
 
       {/* Zoom hint overlay (top-right) */}

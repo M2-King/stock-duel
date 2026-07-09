@@ -43,6 +43,11 @@
   height: 14px;
 }
 
+.find-match-wrap {
+  position: relative;
+  z-index: 1;
+}
+
 .game-info {
   display: flex;
   flex-direction: column;

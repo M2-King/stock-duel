@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useGameStore } from '../store/gameStore';
 import MarketChart from '../components/MarketChart';
+import { formatWan } from '../shared/tradeLimits';
 import './TradePanel.css';
 
 export default function TradePanel() {
-  const { currentQuote, orderBook, holdings, cash: playerCash, borrowed, leverage, setLeverage, placeOrder, purchaseInsiderInfo, gameStatus, unrealizedPnl, allStocks, watchlist, selectSymbol, toggleWatchlist, showToast } = useGameStore();
+  const { currentQuote, orderBook, holdings, cash: playerCash, borrowed, leverage, setLeverage, placeOrder, purchaseInsiderInfo, gameStatus, unrealizedPnl, allStocks, watchlist, selectSymbol, toggleWatchlist, showToast, getStockRestriction } = useGameStore();
   // Real available buying power = cash*leverage minus outstanding borrowed margin.
   const buyingPower = Math.max(0, playerCash * leverage - borrowed);
   const positionCost = holdings.reduce((s, h) => s + h.avgPrice * h.shares, 0);
@@ -17,6 +18,17 @@ export default function TradePanel() {
   const [insiderFeedback, setInsiderFeedback] = useState<{ kind: 'success' | 'error'; msg: string } | null>(null);
 
   const orderPrice = orderType === 'market' ? currentQuote.price : limitPrice;
+  const restriction = getStockRestriction(currentQuote.symbol);
+  const maxRestrictedAmount = restriction?.maxSingle ?? Infinity;
+  const orderAmount = orderPrice * quantity;
+  const overRestriction = restriction && orderAmount > maxRestrictedAmount;
+
+  const maxBuyQty = useMemo(() => {
+    const byCash = Math.floor(buyingPower / orderPrice);
+    if (!restriction) return byCash;
+    const byRestriction = Math.floor(restriction.maxSingle / orderPrice);
+    return Math.min(byCash, byRestriction);
+  }, [buyingPower, orderPrice, restriction]);
 
   useEffect(() => {
     setLimitPrice(currentQuote.price);
@@ -211,21 +223,37 @@ export default function TradePanel() {
 
           <div className="shares-block">
             <span className="block-label">Shares</span>
+            {restriction && (
+              <div className="restriction-notice">
+                监管限制：单笔上限 {formatWan(restriction.maxSingle)}，最多 {maxBuyQty.toLocaleString()} 股
+              </div>
+            )}
             <div className="shares-options">
               {[0.25, 0.5, 0.75, 1].map(p => (
-                <button key={p} className="share-opt" onClick={() => setSharePct(p)}>
+                <button key={p} className="share-opt" onClick={() => {
+                  const maxQ = side === 'buy' ? maxBuyQty : (holdings.find(h => h.symbol === currentQuote.symbol)?.shares ?? 0);
+                  setQuantity(Math.max(1, Math.floor(maxQ * p)));
+                }}>
                   {Math.round(p * 100)}%
                 </button>
               ))}
-              <button className="share-opt" onClick={() => setSharePct(1)}>MAX</button>
+              <button className="share-opt" onClick={() => {
+                const maxQ = side === 'buy' ? maxBuyQty : (holdings.find(h => h.symbol === currentQuote.symbol)?.shares ?? 0);
+                setQuantity(Math.max(1, maxQ));
+              }}>MAX</button>
             </div>
             <div className="shares-input-row">
               <input
                 type="number"
-                className="shares-input"
+                className={`shares-input ${overRestriction ? 'over-limit' : ''}`}
                 value={quantity}
                 min={1}
-                onChange={e => setQuantity(Math.max(1, Number(e.target.value) || 0))}
+                max={side === 'buy' ? maxBuyQty : undefined}
+                onChange={e => {
+                  let v = Math.max(1, Number(e.target.value) || 0);
+                  if (side === 'buy' && restriction) v = Math.min(v, maxBuyQty);
+                  setQuantity(v);
+                }}
               />
               <span className="shares-suffix">股</span>
             </div>

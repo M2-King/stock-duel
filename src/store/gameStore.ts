@@ -1,5 +1,17 @@
 import { create } from 'zustand';
 import type { DealerInfo, RegulatoryScores, DealerResources } from '../types';
+import { previewDealerAction } from '../shared/dealerFormulas';
+import {
+  type StockRestriction,
+  FREEZE_SINGLE_RATIO,
+  FREEZE_DAILY_RATIO,
+  FREEZE_TICKS,
+  WARN_SINGLE_RATIO,
+  WARN_DAILY_RATIO,
+  WARN_TICKS,
+  formatWan,
+} from '../shared/tradeLimits';
+export { STOCK_META, getStockMeta, formatStockMetaLine } from '../shared/stockMeta';
 
 export type Role = 'dealer' | 'retail' | 'regulator';
 
@@ -42,7 +54,16 @@ export interface Message {
   type: 'system' | 'player' | 'regulator';
 }
 
-export type GameStatus = 'idle' | 'matching' | 'reversed' | 'playing' | 'settlement';
+export type GameStatus = 'idle' | 'waiting' | 'matching' | 'reversed' | 'playing' | 'settlement';
+export type MatchFlow = 'online' | 'offline' | null;
+
+export interface WaitingRoomState {
+  code: string | null;
+  currentPlayers: number;
+  requiredPlayers: number;
+  countdown: number | null;
+  mode: 'room' | 'quick';
+}
 
 interface Quote {
   symbol: string;
@@ -135,6 +156,7 @@ interface Alert {
   timestamp: number;
   source: string;
   resolved?: boolean;
+  symbol?: string;
 }
 
 interface Player {
@@ -217,16 +239,28 @@ interface SimulationState {
   dayAutoTimer: ReturnType<typeof setTimeout> | null;
   // Simulation speed multiplier (1 = 12s/morning, 2 = 6s, 4 = 3s)
   speed: number;
+  // Internal counter for backend mode: number of market:tick received (used to
+  // throttle aggregateKline / recalculateIndicators). Not user-facing.
+  _serverTickCount?: number;
+  // Internal: last wall-clock time a timeline point was accepted (used to throttle
+  // server 200ms ticks into 2.5s timeline points). Not user-facing.
+  _lastTimelineTick?: number;
+  // Internal: last wall-clock time holdings GBM was applied (used to throttle
+  // server 200ms ticks into tickInterval-cadence holdings updates). Not user-facing.
+  _lastHoldingsUpdate?: number;
+  /** Set true by startSimulation; guards session-close until the tick engine is armed. */
+  _sessionInitialized?: boolean;
 }
 
 interface GameState {
   // User
   role: Role;
   userName: string;
-  userId: string;
 
   // Game
   gameStatus: GameStatus;
+  /** Distinguishes online flip-overlay flow vs offline direct-to-playing */
+  matchFlow: MatchFlow;
   currentDay: number;
   currentTick: number;
   maxDays: number;
@@ -238,6 +272,10 @@ interface GameState {
   currentQuote: Quote;
   klines: KLine[];
   timelineData: number[];
+  /** 每只股票独立保存的 timeline 价格点序列。key = symbol */
+  timelineBySymbol: Record<string, number[]>;
+  /** 每只股票独立保存的 K 线。key = symbol */
+  klinesBySymbol: Record<string, KLine[]>;
   orderBook: OrderBook;
   indicators: Indicators;
   indicatorSeries: IndicatorSeries;
@@ -292,9 +330,10 @@ interface GameState {
   // Regulator
   alerts: Alert[];
   regulatoryScores: { manipulation: number; insider: number; misinformation: number };
-  // scores is a public alias for regulatoryScores (RegulatorPanel reads it).
-  // Kept in sync by adjustScores and restartMatch.
   scores: RegulatoryScores;
+  justiceScore: number;
+  stockRestrictions: Record<string, StockRestriction>;
+  stockDailyTraded: Record<string, number>;
 
   // Messages
   messages: Message[];
@@ -307,12 +346,73 @@ interface GameState {
 
   // Matching
   matchOpponentName: string;
+  waitingRoom: WaitingRoomState | null;
+  onlinePlayerCount: 2 | 3;
 
   // Simulation
   simulation: SimulationState;
 
   // Toast (for in-game alerts)
   toast: { id: string; message: string; type: 'info' | 'warning' | 'success' | 'danger' } | null;
+
+  // Modal (disconnect / forfeit / room destroyed)
+  modal: { type: 'disconnect' | 'forfeit' | 'room_destroyed' | 'solo_confirm' | 'kicked'; message: string; title?: string } | null;
+  showModal: (type: 'disconnect' | 'forfeit' | 'room_destroyed' | 'solo_confirm' | 'kicked', message: string, title?: string) => void;
+  dismissModal: () => void;
+
+  // ============================================================
+  // Backend adapter (REST + WebSocket bridge)
+  // ============================================================
+  // backendMode: true 时，由 socket.io 推送的行情/成交/庄家结果驱动 store；
+  //              false 时，全部走本地 processTick/placeOrder 等模拟器。
+  //  - wsStatus 当前连接状态（idle | connecting | connected | disconnected | error）
+  //  - authToken / matchId 用来在重连时恢复对局
+  //  - connectBackend() 会在 app boot 时被调用一次；
+  //    ping 成功就 set(true)，失败保持本地模拟（不 throw）。
+  // ============================================================
+  backendMode: boolean;
+  wsStatus: 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error';
+  authToken: string | null;
+  matchId: string | null;
+  userId: string;
+  connectBackend: () => Promise<boolean>;
+  disconnectBackend: () => void;
+  // Internal helpers invoked by wsService event handlers (prefixed with _ to
+  // signal "don't call from React components directly").
+  _applyServerTick: (payload: {
+    // Old shape:
+    //   { symbol, quote, orderBook, timeline }
+    symbol?: string;
+    quote?: any;
+    orderBook?: any;
+    timeline?: any;
+    // New shape:
+    //   { quotes: { [symbol]: Quote }, orderBooks: { [symbol]: OrderBook } }
+    quotes?: Record<string, any>;
+    orderBooks?: Record<string, any>;
+  }) => void;
+  _applyServerSnapshot: (snap: { matchId: string; role: string; symbol: string; quote: any; klines: any[]; orderBook: any; indicators: any; currentDay?: number; currentTick?: number; session?: string }) => void;
+  _applyServerNews: (news: any) => void;
+  _applyServerBlackSwan: (payload: { symbol: string; newPrice: number; label: string; multiplier: number }) => void;
+  _applyServerMarketUpdate: (payload: { symbol: string; quote: any; klines: any[]; orderBook: any; indicators: any; timeline: any[] }) => void;
+  _applyTradeResult: (payload: { side: 'buy' | 'sell'; code: number; data: any; message: string }) => void;
+  _applyDealerResult: (payload: { code: number; data: any; message: string }) => void;
+  _applyRegulatorFreeze: (payload: { symbol: string; maxSingle: number; maxDaily: number; expiresTick: number; durationTicks?: number; freezeTicks?: number; restrictionType?: 'warn' | 'freeze' }) => void;
+  _applyRegulatorKick: (payload: { penalizedUserId: string; opponentId?: string; fine: number; symbol?: string }) => void;
+  _applyRegulatorResult: (payload: { code: number; data?: any; message?: string }) => void;
+  _applyMatchTick: (payload: { currentTick: number }) => void;
+  _applyMatchEnd: (payload: { matchId: string; winnerId?: string }) => void;
+  _handleMatchTimeout: (payload: { message?: string }) => void;
+  _handleRoomUpdate: (payload: { code?: string; currentPlayers: number; requiredPlayers: number; mode?: 'room' | 'quick' }) => void;
+  _handleRoomCountdown: (payload: { seconds?: number }) => void;
+  _handleMatchStart: (payload: { matchId: string; role: string; opponent?: string }) => Promise<void>;
+  _confirmSoloFallback: () => Promise<void>;
+  _handleMatchForfeit: (payload: { matchId: string; userId: string; winnerId?: string; message?: string; self?: boolean }) => void;
+  _handleMatchDestroyed: (payload: { matchId?: string; code?: string; reason?: string; message?: string }) => void;
+  _handleDisconnectWarning: (payload: { message?: string }) => void;
+  _attemptReconnectMatch: () => Promise<void>;
+  _resetMatchToIdle: () => void;
+  _joinBackendMatch: (matchId: string, role: string | null) => Promise<void>;
 
   // Actions
   setRole: (role: Role) => void;
@@ -341,9 +441,10 @@ interface GameState {
   addAlert: (alert: Alert) => void;
   resolveAlert: (id: string) => void;
   adjustScores: (delta: Partial<{ manipulation: number; insider: number; misinformation: number }>) => void;
-  applyRegulatoryAction: (alertId: string, action: 'warn' | 'freeze' | 'kick' | 'dismiss') => void;
+  applyRegulatoryAction: (alertId: string, action: 'warn' | 'freeze' | 'kick' | 'dismiss', symbol?: string) => Promise<boolean>;
+  getStockRestriction: (symbol: string) => StockRestriction | null;
 
-  executeDealerAction: (action: { type: string; cost: number; energy: number; risk: number; power: number }) => { success: boolean; error?: string };
+  executeDealerAction: (action: { type: string; power: number; cost?: number }) => Promise<{ success: boolean; error?: string }> | { success: boolean; error?: string };
   triggerBlackSwan: () => void;
   purchaseInsiderInfo: (newsId: string, cost: number) => { success: boolean; tip?: string; trustworthy?: boolean; error?: string };
 
@@ -352,10 +453,20 @@ interface GameState {
   randomizeMyRole: () => void;
 
   startMatch: () => void;
+  startSoloMatch: () => Promise<void>;
+  startOnlineQuickMatch: () => Promise<void>;
+  startOfflinePractice: (role: Role) => Promise<void>;
+  createOnlineRoom: (playerCount?: 2 | 3) => Promise<string | null>;
+  joinOnlineRoom: (code: string) => Promise<void>;
   cancelMatch: () => void;
+  cancelWaiting: () => Promise<void>;
   endMatch: () => void;
   restartMatch: () => void;
   setDealerInfo: (info: DealerInfo | null) => void;
+  /** Reset day/tick/session to Day 1 09:30 morning — call before entering playing. */
+  resetGameSession: () => void;
+  /** Reset session state and transition to playing (canonical match-start entry). */
+  enterPlaying: () => void;
 
   // Tick engine
   startSimulation: () => void;
@@ -542,16 +653,70 @@ const initialSettings: UserSettings = {
   language: 'zh',
 };
 
+// ============================================================
+// Per-symbol timeline/K线 helpers
+// 每只股票独立的 timeline + K线，切换股票时图表无缝切换。
+// ============================================================
+const TIMELINE_MAX = 500;
+const KLINES_MAX = 300;
+
+/** 把一个价格点 push 到对应 symbol 的 timeline。如果当前 currentQuote 是这个 symbol，同时同步 timelineData。 */
+function pushTimelinePoint(
+  set: (partial: Partial<GameState> | ((s: GameState) => Partial<GameState>)) => void,
+  state: GameState,
+  symbol: string,
+  price: number,
+  maxPoints = TIMELINE_MAX,
+) {
+  const cur = state.timelineBySymbol[symbol] ?? [];
+  const next = [...cur, price].slice(-maxPoints);
+  const newMap = { ...state.timelineBySymbol, [symbol]: next };
+  // 同步 timelineData：仅当 symbol 是当前主标的时
+  const partial: any = { timelineBySymbol: newMap };
+  if (symbol === state.currentQuote.symbol) {
+    partial.timelineData = next;
+  }
+  set(partial);
+}
+
+/** 把一个 K 线 push 到对应 symbol 的 klinesBySymbol；同时同步 klines（如适用）。 */
+function pushKlineBySymbol(
+  set: (partial: Partial<GameState> | ((s: GameState) => Partial<GameState>)) => void,
+  state: GameState,
+  symbol: string,
+  kline: KLine,
+) {
+  const cur = state.klinesBySymbol[symbol] ?? [];
+  const next = [...cur, kline].slice(-KLINES_MAX);
+  const newMap = { ...state.klinesBySymbol, [symbol]: next };
+  const partial: any = { klinesBySymbol: newMap };
+  if (symbol === state.currentQuote.symbol) {
+    partial.klines = next;
+  }
+  set(partial);
+}
+
+/** 切换股票时，把目标 symbol 的 timeline/klines 同步到顶层字段，供图表读取。 */
+function syncCurrentSymbolData(
+  set: (partial: Partial<GameState> | ((s: GameState) => Partial<GameState>)) => void,
+  state: GameState,
+  symbol: string,
+) {
+  const tl = state.timelineBySymbol[symbol] ?? [];
+  const kl = state.klinesBySymbol[symbol] ?? state.klines ?? [];
+  set({ timelineData: tl, klines: kl });
+}
+
 export const useGameStore = create<GameState>((set, get) => ({
   // User
   role: 'retail',
   userName: 'Investor_007',
-  userId: 'user_007',
-  
+
   // Game
   gameStatus: 'idle',
+  matchFlow: null,
   currentDay: 1,
-  currentTick: 87,
+  currentTick: 0,
   maxDays: 5,
   maxTicksPerDay: 120, // 60 上午 + 60 下午（午休不计入 tick）
   // (roundTime removed; clock now lives in src/utils/clock.ts)
@@ -559,6 +724,8 @@ export const useGameStore = create<GameState>((set, get) => ({
   currentQuote: initialQuote,
   klines: [],
   timelineData: [],
+  timelineBySymbol: {},
+  klinesBySymbol: {},
   orderBook: {
     bids: [
       { price: 94.85, quantity: 1500, orders: 12 },
@@ -627,7 +794,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   ],
   players: initialPlayersInGame,
   leaderboard: initialPlayers,
-  dealerResources: { cash: 50000000, energy: 100, riskIndex: 32 },
+  dealerResources: { cash: 50000000, energy: 0, riskIndex: 0 },
   dealerInfo: null,
   insiderData: {
     revenue: '¥2.4B',
@@ -640,6 +807,9 @@ export const useGameStore = create<GameState>((set, get) => ({
   alerts: initialAlerts,
   regulatoryScores: { manipulation: 32.5, insider: 18.2, misinformation: 12.8 },
   scores: { manipulation: 32.5, insider: 18.2, misinformation: 12.8 },
+  justiceScore: 0,
+  stockRestrictions: {},
+  stockDailyTraded: {},
   messages: initialMessages,
   settings: initialSettings,
 
@@ -650,6 +820,8 @@ export const useGameStore = create<GameState>((set, get) => ({
   ],
 
   matchOpponentName: 'WhaleKing_88',
+  waitingRoom: null,
+  onlinePlayerCount: 2,
 
 simulation: {
     timer: null,
@@ -672,9 +844,21 @@ simulation: {
     lunchAutoTimer: null,
     dayAutoTimer: null,
     speed: 1,
+    _serverTickCount: 0,
+    _lastTimelineTick: 0,
+    _lastHoldingsUpdate: 0,
+    _sessionInitialized: false,
   },
 
   toast: null,
+  modal: null,
+
+  // Backend adapter (default = local simulation)
+  backendMode: false,
+  wsStatus: 'idle',
+  authToken: null,
+  matchId: null,
+  userId: `guest_${Math.random().toString(36).slice(2, 10)}`,
 
   // Section for navigation
   currentSection: 'overview' as string,
@@ -714,6 +898,10 @@ simulation: {
     const prevClose = stock.price - stock.change;
     const change = price - prevClose;
     const changePercent = prevClose > 0 ? (change / prevClose) * 100 : stock.changePercent;
+    // 关键修复：切换股票时把对应 symbol 的 timeline/klines 同步到顶层字段
+    // 这样 MarketChart 读取 timelineData 时看到的是目标股票的数据，而不是上一只的。
+    const tl = state.timelineBySymbol[symbol] ?? [];
+    const kl = state.klinesBySymbol[symbol] ?? [];
     set({
       currentQuote: {
         ...state.currentQuote,
@@ -729,6 +917,8 @@ simulation: {
         prevClose,
         timestamp: Date.now(),
       },
+      timelineData: tl,
+      klines: kl,
     });
     get().refreshOrderBook();
   },
@@ -742,8 +932,80 @@ simulation: {
   placeOrder: (order) => {
     const state = get();
     const amount = order.price * order.quantity;
+    const restriction = get().getStockRestriction(order.symbol);
+    if (restriction) {
+      if (amount > restriction.maxSingle) {
+        get().showToast('该股票已被监管限制', 'warning');
+        return { success: false, error: '该股票已被监管限制' };
+      }
+      const dailyUsed = state.stockDailyTraded[order.symbol] ?? 0;
+      if (dailyUsed + amount > restriction.maxDaily) {
+        get().showToast('该股票已被监管限制', 'warning');
+        return { success: false, error: '该股票已被监管限制' };
+      }
+    }
+    // Backend mode: 只发指令，结果由 _applyTradeResult 回填
+    if (state.backendMode) {
+      if (!state.matchId) {
+        get().showToast('尚未加入对局', 'warning');
+        return { success: false, error: '未入对局' };
+      }
+      const payload = {
+        matchId: state.matchId,
+        symbol: order.symbol,
+        price: order.price,
+        quantity: order.quantity,
+        leverage: order.leverage ?? state.leverage,
+      };
+      // 异步导入避免循环依赖；先 await socket 连上再 emit，避免 ack 误判。
+      (async () => {
+        try {
+          const ws = await import('../services/wsService');
+          await ws.waitForAuth(8000);
+          if (order.side === 'buy') ws.sendBuy(payload);
+          else ws.sendSell({ ...payload });
+          console.log('[Trade] sent', order.side, payload);
+        } catch (err) {
+          console.error('[Trade] WS not ready', err);
+          get().showToast(`下单失败: WS 未就绪 (${(err as Error).message})`, 'danger');
+        }
+      })();
+      // 乐观本地预占持仓/扣现金 — UI 立即响应
+      // （真正的 server 回执到位时 _applyTradeResult 会覆盖）
+      set((s) => {
+        let cash = s.cash;
+        let borrowed = s.borrowed;
+        let holdings = s.holdings;
+        if (order.side === 'buy') {
+          const amount = order.price * order.quantity;
+          const fromCash = Math.min(s.cash, amount);
+          cash = s.cash - fromCash;
+          borrowed = s.borrowed + (amount - fromCash);
+          const idx = holdings.findIndex(h => h.symbol === order.symbol);
+          if (idx >= 0) {
+            const h = holdings[idx];
+            const totalShares = h.shares + order.quantity;
+            const totalCost = h.avgPrice * h.shares + order.price * order.quantity;
+            const avgPrice = totalCost / totalShares;
+            holdings = holdings.map((hh, i) => i === idx ? { ...hh, shares: totalShares, avgPrice, marketPrice: order.price } : hh);
+          } else {
+            holdings = [...holdings, { symbol: order.symbol, shares: order.quantity, avgPrice: order.price, marketPrice: order.price, pnl: 0, pnlPercent: 0, sector: 'Other' }];
+          }
+        } else {
+          const amount = order.price * order.quantity;
+          const repay = Math.min(s.borrowed, amount);
+          borrowed = s.borrowed - repay;
+          cash = s.cash + (amount - repay);
+          holdings = s.holdings
+            .map(h => h.symbol === order.symbol ? { ...h, shares: h.shares - order.quantity, marketPrice: order.price } : h)
+            .filter(h => h.shares > 0);
+        }
+        return { cash, playerCash: cash, borrowed, holdings };
+      });
+      return { success: true };
+    }
 
-    // Pre-flight validation
+    // Pre-flight validation (local mode)
     if (order.side === 'buy') {
       // Leverage lets a buy use up to cash * leverage. The portion above settled
       // cash becomes borrowed margin (tracked in state.borrowed).
@@ -831,6 +1093,8 @@ simulation: {
       const portfolioTotal = cash + positionValue - borrowed;
       const todayPnl = portfolioTotal - s.simulation.initialAssets;
       const todayPnlPercent = (todayPnl / s.simulation.initialAssets) * 100;
+      const dailyKey = order.symbol;
+      const prevDaily = s.stockDailyTraded[dailyKey] ?? 0;
       return {
         orderHistory,
         cash,
@@ -845,6 +1109,7 @@ simulation: {
         totalTradeCount: s.totalTradeCount + 1,
         bestTradePnl: tradePnl > s.bestTradePnl ? tradePnl : s.bestTradePnl,
         currentTick: s.currentTick + 1,
+        stockDailyTraded: { ...s.stockDailyTraded, [dailyKey]: prevDaily + amount },
       };
     });
 
@@ -947,6 +1212,8 @@ simulation: {
       },
       klines: [],
       timelineData: [],
+      timelineBySymbol: {},
+      klinesBySymbol: {},
       holdings: [],
       orderHistory: [],
       cash: STARTING_ASSETS,
@@ -959,8 +1226,9 @@ simulation: {
       unrealizedPnl: 0,
       totalTradeCount: 0,
       bestTradePnl: 0,
-      // Reset dealer resources so energy / risk / capital don't persist across matches.
-      dealerResources: { cash: 50000000, energy: 100, riskIndex: 32 },
+      // Reset dealer resources so risk / capital don't persist across matches.
+      // （已移除 energy 字段 — 庄家操作只用 cash）
+      dealerResources: { cash: 50000000, energy: 0, riskIndex: 0 },
       pendingInsiderTip: null,
       simulation: {
         ...get().simulation,
@@ -975,9 +1243,16 @@ simulation: {
         finalAssets: undefined,
         returnRate: undefined,
         settlementComputed: false,
+        _serverTickCount: 0,
+        _lastTimelineTick: 0,
+        _lastHoldingsUpdate: 0,
+        _sessionInitialized: false,
       },
       regulatoryScores: { manipulation: 0, insider: 0, misinformation: 0 },
       scores: { manipulation: 0, insider: 0, misinformation: 0 },
+      justiceScore: 0,
+      stockRestrictions: {},
+      stockDailyTraded: {},
       dealerInfo: null,
       indicators: initialIndicators,
       indicatorSeries: initialIndicatorSeries,
@@ -1037,48 +1312,201 @@ simulation: {
     };
   }),
   
-  applyRegulatoryAction: (alertId, action) => {
+  getStockRestriction: (symbol) => {
     const state = get();
-    const alert = state.alerts.find(a => a.id === alertId);
-    if (!alert) return;
-    // Adjust scores based on action severity + alert severity
-    let manipulation = 0, insider = 0, misinformation = 0;
-    const sev = alert.severity === 'high' ? 4 : alert.severity === 'medium' ? 2.5 : 1.2;
-    if (action === 'warn') {
-      manipulation -= sev * 0.8;
-      insider -= sev * 0.8;
-      misinformation -= sev * 0.8;
-    } else if (action === 'freeze') {
-      manipulation -= sev * 2;
-      insider -= sev * 2;
-      misinformation -= sev * 2;
-    } else if (action === 'kick') {
-      manipulation -= sev * 3;
-      insider -= sev * 3;
-      misinformation -= sev * 3;
-    } else {
-      manipulation -= sev * 0.2;
-      insider -= sev * 0.2;
-      misinformation -= sev * 0.2;
+    const r = state.stockRestrictions[symbol];
+    if (!r) return null;
+    if (r.expiresTick <= state.currentTick) return null;
+    return r;
+  },
+
+  applyRegulatoryAction: async (alertId, action, symbolArg) => {
+    const state = get();
+    const alert = state.alerts.find((a) => a.id === alertId);
+    const symbol = symbolArg ?? alert?.symbol ?? state.currentQuote.symbol;
+
+    const estimateLocalLimits = (type: 'warn' | 'freeze') => {
+      const klines = state.klinesBySymbol[symbol] ?? [];
+      const avgVol = klines.length > 0
+        ? klines.slice(-30).reduce((s, k) => s + k.volume, 0) / Math.min(30, klines.length)
+        : state.currentQuote.volume;
+      const avgTickTurnover = state.currentQuote.price * Math.max(1, avgVol);
+      const avgDailyTurnover = avgTickTurnover * 240;
+      const singleRatio = type === 'warn' ? WARN_SINGLE_RATIO : FREEZE_SINGLE_RATIO;
+      const dailyRatio = type === 'warn' ? WARN_DAILY_RATIO : FREEZE_DAILY_RATIO;
+      return {
+        maxSingle: Math.max(10_000, Math.floor(avgTickTurnover * singleRatio)),
+        maxDaily: Math.max(50_000, Math.floor(avgDailyTurnover * dailyRatio)),
+        durationTicks: type === 'warn' ? WARN_TICKS : FREEZE_TICKS,
+        restrictionType: type,
+      };
+    };
+
+    const runLocal = () => {
+      if (action === 'freeze' || action === 'warn') {
+        const limits = estimateLocalLimits(action);
+        const reason = action === 'freeze' ? '监管冻结' : '监管警告';
+        set((s) => ({
+          stockRestrictions: {
+            ...s.stockRestrictions,
+            [symbol]: {
+              symbol,
+              maxSingle: limits.maxSingle,
+              maxDaily: limits.maxDaily,
+              expiresTick: state.currentTick + limits.durationTicks,
+              reason,
+              restrictionType: limits.restrictionType,
+            },
+          },
+          alerts: s.alerts.filter((a) => a.id !== alertId),
+        }));
+        const label = action === 'freeze' ? '冻结' : '警告';
+        get().showToast(
+          `${symbol} ${label}：单笔上限 ${formatWan(limits.maxSingle)}，持续 ${limits.durationTicks} tick`,
+          action === 'freeze' ? 'warning' : 'success',
+        );
+        if (state.role === 'retail') {
+          get().showToast(`监管对 ${symbol} 实施了交易限制`, 'info');
+        }
+      } else if (action === 'kick') {
+        const holding = state.holdings.find((h) => h.symbol === symbol);
+        const positionValue = holding ? holding.marketPrice * holding.shares : 0;
+        const fine = positionValue > 0
+          ? Math.floor(positionValue * 0.3)
+          : Math.floor(state.totalAssets * 0.1);
+        set((s) => ({
+          cash: Math.max(0, s.cash - fine),
+          playerCash: Math.max(0, s.cash - fine),
+          alerts: s.alerts.filter((a) => a.id !== alertId),
+          gameStatus: 'settlement',
+        }));
+        get().showModal('kicked', `你被监管踢出，罚款 ${formatWan(fine)}`, '监管处罚');
+      } else {
+        set((s) => ({ alerts: s.alerts.filter((a) => a.id !== alertId) }));
+        get().showToast('已忽略告警', 'info');
+      }
+      if (action === 'freeze' || action === 'warn') {
+        get().adjustScores({ manipulation: -2, insider: -2, misinformation: -2 });
+      }
+      if (action === 'freeze' || action === 'kick') {
+        const manip = get().regulatoryScores.manipulation;
+        const delta = manip > 50 ? 10 : manip < 30 ? -5 : 0;
+        if (delta !== 0) set((s) => ({ justiceScore: s.justiceScore + delta }));
+      }
+      return true;
+    };
+
+    if (state.backendMode && state.matchId) {
+      try {
+        const ws = await import('../services/wsService');
+        await ws.waitForAuth(8000);
+        const resultPromise = ws.onceWithTimeout<{ code: number; data?: any; message?: string }>('regulator:result', 8000);
+        ws.sendRegulatorAction({ matchId: state.matchId, alertId, action, symbol });
+        const payload = await resultPromise;
+        get()._applyRegulatorResult({ ...payload, _alertId: alertId });
+        return payload.code === 0;
+      } catch (err) {
+        console.error('[Regulator] WS failed', err);
+        get().showToast('监管操作失败，请检查网络连接', 'warning');
+        return false;
+      }
     }
-    get().adjustScores({ manipulation, insider, misinformation });
-    // Remove the alert (resolved)
-    set((s) => ({
-      alerts: s.alerts.filter(a => a.id !== alertId),
-    }));
-    get().showToast(`已${({warn:'警告', freeze:'冻结', kick:'踢出', dismiss:'忽略'} as Record<string,string>)[action] || action}告警`, 'success');
+
+    return runLocal();
   },
   
-  executeDealerAction: ({ type, cost, energy, risk, power }) => {
+  /**
+   * 庄家操盘 action。
+   * 已移除 energy 机制 — cost 来自后端 preview-cost 接口（与 action 一致公式），
+   * 前端只做"显示 + 涨跌停 + 资金"预检，真正执行交给后端。
+   */
+  executeDealerAction: async ({ type, power, cost: advisoryCost }: { type: string; power: number; cost?: number }) => {
     const state = get();
-    if (!state.dealerResources) return { success: false, error: '无庄家资源' };
-    if (state.dealerResources.cash < cost) {
-      get().showToast(`庄家资金不足: 需要 ¥${cost.toLocaleString()}，可用 ¥${state.dealerResources.cash.toLocaleString()}`, 'warning');
+    const symbol = state.currentQuote.symbol;
+
+    const restriction = get().getStockRestriction(symbol);
+    if (restriction) {
+      const remaining = restriction.expiresTick - state.currentTick;
+      get().showToast(`${symbol} 操盘工具已被监管锁定，还剩 ${remaining} tick`, 'warning');
+      return { success: false, error: '监管锁定' };
+    }
+
+    const curPrice = state.currentQuote.price;
+    const prevClose = state.currentQuote.prevClose || curPrice;
+    const upper = prevClose * 1.10;
+    const lower = prevClose * 0.90;
+
+    // ---- 涨跌停预检（前端立刻反馈，不必等后端 ack） ----
+    if (type === 'pump' && curPrice >= upper - 0.0001) {
+      get().showToast(`已达涨停 ¥${upper.toFixed(2)}，无法再拉升`, 'warning');
+      return { success: false, error: '涨停' };
+    }
+    if (type === 'press' && curPrice <= lower + 0.0001) {
+      get().showToast(`已达跌停 ¥${lower.toFixed(2)}，无法再压价`, 'warning');
+      return { success: false, error: '跌停' };
+    }
+
+    // ---- 取 cost / effect（后端优先，本地用共享公式） ----
+    let realCost = advisoryCost ?? 0;
+    let effectPct = 0;
+    let riskIncrease = 0;
+    const localPreview = previewDealerAction(type, symbol, power);
+    if (state.backendMode) {
+      try {
+        const api = await import('../services/apiService');
+        const res = await api.get(`/api/dealer/preview-cost?type=${type}&power=${power}&symbol=${symbol}`);
+        if (res?.code === 0 && typeof res.data?.cost === 'number') {
+          realCost = res.data.cost;
+          effectPct = res.data.effectPct ?? localPreview.effectPct;
+          riskIncrease = res.data.riskIncrease ?? localPreview.riskIncrease;
+        } else {
+          realCost = localPreview.cost;
+          effectPct = localPreview.effectPct;
+          riskIncrease = localPreview.riskIncrease;
+        }
+      } catch {
+        realCost = localPreview.cost;
+        effectPct = localPreview.effectPct;
+        riskIncrease = localPreview.riskIncrease;
+      }
+    } else {
+      realCost = localPreview.cost;
+      effectPct = localPreview.effectPct;
+      riskIncrease = localPreview.riskIncrease;
+    }
+
+    if (state.dealerResources && state.dealerResources.cash < realCost) {
+      get().showToast(`庄家资金不足: 需要 ¥${realCost.toLocaleString()}，可用 ¥${state.dealerResources.cash.toLocaleString()}`, 'warning');
       return { success: false, error: '庄家资金不足' };
     }
-    if (state.dealerResources.energy < energy) {
-      get().showToast(`能量不足: 需要 ${energy}，可用 ${state.dealerResources.energy}`, 'warning');
-      return { success: false, error: '能量不足' };
+
+    // ---- Backend mode: 发指令到 WS ----
+    if (state.backendMode) {
+      if (!state.matchId) {
+        get().showToast('尚未加入对局', 'warning');
+        return { success: false, error: '未入对局' };
+      }
+      try {
+        const ws = await import('../services/wsService');
+        await ws.waitForAuth(8000);
+        ws.sendDealerAction({
+          matchId: state.matchId!,
+          type: type as any,
+          power,
+          symbol,
+        });
+        return { success: true };
+      } catch (err) {
+        get().showToast(`庄家指令发送失败: ${(err as Error).message}`, 'danger');
+        return { success: false, error: '发送失败' };
+      }
+    }
+
+    // ---- Local mode: 本地模拟（旧路径保留） ----
+    if (!state.dealerResources) return { success: false, error: '无庄家资源' };
+    if (state.dealerResources.cash < realCost) {
+      get().showToast(`庄家资金不足: 需要 ¥${realCost.toLocaleString()}`, 'warning');
+      return { success: false, error: '庄家资金不足' };
     }
 
     const intensity = power / 100;
@@ -1088,23 +1516,30 @@ simulation: {
     let fakeOrderBookRestore: typeof state.orderBook | null = null;
 
     switch (type) {
-      case 'pump':
-        newPrice = state.currentQuote.price * (1 + 0.003 * power);
+      case 'pump': {
+        newPrice = state.currentQuote.price * (1 + effectPct / 100);
+        if (newPrice > upper) newPrice = upper;
         break;
-      case 'press':
-        newPrice = state.currentQuote.price * (1 - 0.003 * power);
+      }
+      case 'press': {
+        newPrice = state.currentQuote.price * (1 - effectPct / 100);
+        if (newPrice < lower) newPrice = lower;
         break;
-      case 'accumulate':
-        newVolume = state.currentQuote.volume * (1 + 0.5 * intensity);
-        extraCashEffect = -cost * 0.5;
+      }
+      case 'accumulate': {
+        newVolume = state.currentQuote.volume * (1 + effectPct / 100);
+        extraCashEffect = 0;
         break;
-      case 'distribute':
-        newVolume = state.currentQuote.volume * (1 + 0.4 * intensity);
-        extraCashEffect = cost * 0.6;
-        newPrice = state.currentQuote.price * (1 - 0.001 * power);
+      }
+      case 'distribute': {
+        newVolume = state.currentQuote.volume * (1 + effectPct / 100);
+        extraCashEffect = power * 100 * state.currentQuote.price;
+        newPrice = state.currentQuote.price * (1 - (effectPct * 0.3) / 100);
+        if (newPrice < lower) newPrice = lower;
         break;
+      }
       case 'wash':
-        newVolume = state.currentQuote.volume * (1 + 1.5 * intensity);
+        newVolume = state.currentQuote.volume * (1 + effectPct / 100);
         break;
       case 'fake': {
         const fakeBook: OrderBook = JSON.parse(JSON.stringify(state.orderBook));
@@ -1122,14 +1557,16 @@ simulation: {
     const scoreDelta: { manipulation?: number; insider?: number; misinformation?: number } = {};
     if (type === 'wash') scoreDelta.manipulation = (scoreDelta.manipulation ?? 0) + intensity * 2;
     if (['pump', 'press', 'wash', 'fake'].includes(type)) {
-      scoreDelta.manipulation = (scoreDelta.manipulation ?? 0) + risk * intensity;
+      scoreDelta.manipulation = (scoreDelta.manipulation ?? 0) + intensity * 1.5;
     }
     if (type === 'fake') {
-      scoreDelta.misinformation = risk * intensity / 2;
+      scoreDelta.misinformation = intensity / 2;
     }
 
     set((s) => {
-      const newTimeline = [...s.timelineData, newPrice].slice(-240);
+      const sym = s.currentQuote.symbol;
+      const cur = s.timelineBySymbol[sym] ?? [];
+      const newTimeline = [...cur, newPrice].slice(-240);
       const dr = s.dealerResources;
       return {
         currentQuote: {
@@ -1140,16 +1577,16 @@ simulation: {
           volume: newVolume,
           timestamp: Date.now(),
         },
-        stockPrices: { ...s.stockPrices, [s.currentQuote.symbol]: newPrice },
+        stockPrices: { ...s.stockPrices, [sym]: newPrice },
         orderBook: fakeOrderBookRestore ?? s.orderBook,
         dealerResources: dr ? {
-          cash: dr.cash - cost + extraCashEffect,
-          energy: Math.max(0, dr.energy - energy),
-          riskIndex: Math.min(100, dr.riskIndex + intensity * 1.5),
+          cash: dr.cash - realCost + extraCashEffect,
+          energy: 0,
+          riskIndex: Math.min(100, dr.riskIndex + riskIncrease),
         } : null,
         timelineData: newTimeline,
-        // also mark-to-market all holdings of this symbol
-        holdings: s.holdings.map((h) => h.symbol === s.currentQuote.symbol
+        timelineBySymbol: { ...s.timelineBySymbol, [sym]: newTimeline },
+        holdings: s.holdings.map((h) => h.symbol === sym
           ? {
               ...h,
               marketPrice: newPrice,
@@ -1166,7 +1603,7 @@ simulation: {
       get().adjustScores(scoreDelta);
     }
 
-    if (risk * intensity > 0.08) {
+    if (intensity > 0.4) {
       const alertLabels: Record<string, string> = {
         pump: '可疑拉升',
         press: '可疑压价',
@@ -1177,7 +1614,7 @@ simulation: {
       };
       get().addAlert({
         id: `alert_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
-        severity: risk * intensity > 0.15 ? 'high' : 'medium',
+        severity: intensity > 0.6 ? 'high' : 'medium',
         title: alertLabels[type] || '市场异常行为',
         description: `庄家执行了 ${type} 操作（强度 ${power}%），触发自动监控`,
         timestamp: Date.now(),
@@ -1197,7 +1634,7 @@ simulation: {
     }
 
     const labelMap: Record<string, string> = { pump: '拉升', press: '压价', accumulate: '吸筹', distribute: '出货', wash: '对敲', fake: '假挂单' };
-    get().showToast(`庄家${labelMap[type] || type}执行成功`, 'info');
+    get().showToast(`庄家${labelMap[type] || type}执行成功（花费 ¥${realCost.toLocaleString()}）`, 'info');
 
     return { success: true };
   },
@@ -1298,17 +1735,248 @@ simulation: {
   },
   
   setReversalCards: (cards) => set({ reversalCards: cards }),
+
+  /**
+   * 单人 Demo 入口：直接调 /api/match/solo，不走 quick-match 排队。
+   * 用户点击"单人练习"按钮时调它；startMatch 3s 超时也会自动 fallback 到这。
+   */
+  startSoloMatch: async () => {
+    await get().startOfflinePractice(get().role);
+  },
+
+  startOnlineQuickMatch: async () => {
+    const state = get();
+    const playerCount = state.onlinePlayerCount;
+    set({
+      matchFlow: 'online',
+      gameStatus: 'waiting',
+      waitingRoom: {
+        code: null,
+        currentPlayers: 0,
+        requiredPlayers: playerCount,
+        countdown: null,
+        mode: 'quick',
+      },
+    });
+    if (state.backendMode) {
+      const api = await import('../services/apiService');
+      const r = await api.apiMatch.quickMatch(state.userId, undefined, playerCount);
+      if (r.code !== 0 || !r.data) {
+        get().showToast(`快速匹配失败: ${r.message}`, 'warning');
+        set({ gameStatus: 'idle', matchFlow: null, waitingRoom: null });
+        return;
+      }
+      if (r.data.matchId) {
+        await get()._joinBackendMatch(r.data.matchId, r.data.role);
+        return;
+      }
+      set({
+        waitingRoom: {
+          code: null,
+          currentPlayers: r.data.currentPlayers ?? 1,
+          requiredPlayers: r.data.requiredPlayers ?? playerCount,
+          countdown: null,
+          mode: 'quick',
+        },
+      });
+      get().showToast('正在等待对手加入...', 'info');
+      return;
+    }
+    set({
+      gameStatus: 'matching',
+      waitingRoom: null,
+      reversalCards: [
+        { role: 'dealer', revealed: false },
+        { role: 'retail', revealed: false },
+        { role: 'regulator', revealed: false },
+      ],
+    });
+  },
+
+  startOfflinePractice: async (role: Role) => {
+    const aiRoles: Record<Role, [Role, Role]> = {
+      dealer: ['retail', 'regulator'],
+      retail: ['dealer', 'regulator'],
+      regulator: ['dealer', 'retail'],
+    };
+    const [ai1, ai2] = aiRoles[role];
+    const state = get();
+    set({ matchFlow: 'offline', role });
+    if (state.backendMode) {
+      const api = await import('../services/apiService');
+      const solo = await api.apiMatch.solo(state.userId, role);
+      if (solo.code !== 0 || !solo.data) {
+        get().showToast(`单人练习启动失败: ${solo.message}`, 'warning');
+        set({ matchFlow: null, gameStatus: 'idle' });
+        return;
+      }
+      get().showToast('单人练习 · AI 对手已就位', 'info');
+      await get()._joinBackendMatch(solo.data.matchId, solo.data.role);
+      return;
+    }
+    set({
+      matchOpponentName: 'AI Bot',
+      reversalCards: [
+        { role, revealed: true },
+        { role: ai1, revealed: false },
+        { role: ai2, revealed: false },
+      ],
+    });
+    get().enterPlaying();
+  },
+
+  createOnlineRoom: async (playerCount: 2 | 3 = 2) => {
+    const state = get();
+    if (!state.backendMode) {
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      set({
+        matchFlow: 'online',
+        gameStatus: 'waiting',
+        onlinePlayerCount: playerCount,
+        waitingRoom: {
+          code,
+          currentPlayers: 1,
+          requiredPlayers: playerCount,
+          countdown: null,
+          mode: 'room',
+        },
+      });
+      get().showToast(`本地模式：房间码 ${code}（演示）`, 'info');
+      return code;
+    }
+    const api = await import('../services/apiService');
+    set({
+      matchFlow: 'online',
+      gameStatus: 'waiting',
+      onlinePlayerCount: playerCount,
+      waitingRoom: {
+        code: null,
+        currentPlayers: 1,
+        requiredPlayers: playerCount,
+        countdown: null,
+        mode: 'room',
+      },
+    });
+    const r = await api.apiMatch.createRoom(state.userId, playerCount);
+    if (r.code !== 0 || !r.data?.code) {
+      get().showToast(`创建房间失败: ${r.message}`, 'warning');
+      set({ gameStatus: 'idle', matchFlow: null, waitingRoom: null });
+      return null;
+    }
+    set({
+      waitingRoom: {
+        code: r.data.code,
+        currentPlayers: r.data.currentPlayers,
+        requiredPlayers: r.data.requiredPlayers,
+        countdown: null,
+        mode: 'room',
+      },
+    });
+    get().showToast('房间已创建，等待对手加入...', 'info');
+    return r.data.code;
+  },
+
+  joinOnlineRoom: async (code: string) => {
+    const state = get();
+    if (!state.backendMode) {
+      get().showToast('本地模式：模拟加入房间', 'info');
+      await get().startOfflinePractice(state.role);
+      return;
+    }
+    set({
+      matchFlow: 'online',
+      gameStatus: 'waiting',
+      waitingRoom: {
+        code: code.toUpperCase(),
+        currentPlayers: 0,
+        requiredPlayers: state.onlinePlayerCount,
+        countdown: null,
+        mode: 'room',
+      },
+    });
+    const api = await import('../services/apiService');
+    const r = await api.apiMatch.joinRoom(state.userId, code);
+    if (r.code !== 0 || !r.data) {
+      get().showToast(`加入房间失败: ${r.message}`, 'warning');
+      set({ gameStatus: 'idle', matchFlow: null, waitingRoom: null });
+      return;
+    }
+    if (r.data.matchId && r.data.role) {
+      await get()._joinBackendMatch(r.data.matchId, r.data.role);
+      return;
+    }
+    set({
+      waitingRoom: {
+        code: r.data.code,
+        currentPlayers: r.data.currentPlayers,
+        requiredPlayers: r.data.requiredPlayers,
+        countdown: null,
+        mode: 'room',
+      },
+    });
+    get().showToast('已加入房间，等待其他玩家...', 'info');
+  },
+
+  /**
+   * 把任意 backend matchId 接进 store 的私有 helper：
+   *   - 调 ws.join-match
+   *   - 等 server 推 match:snapshot（通过 _applyServerSnapshot 已挂载）
+   *   - 失败回 idle
+   */
+  _joinBackendMatch: async (matchId: string, role: string | null) => {
+    if (!matchId) return;
+    const ws = await import('../services/wsService');
+    // 关键修复：socket.io 在未连接时会 buffer emit，但 ack 可能在 backend 看到
+    // auth 完成之前就到达 — 后端 session.userId 为空 → 返回 {ok:false} → 前端误判 401。
+    // 这里先 await connect + auth，再 emit join-match。
+    try {
+      console.log('[join] waiting for WS connect + auth…');
+      await ws.waitForAuth(10000);
+      console.log('[join] WS auth OK, emitting join-match', matchId);
+      console.log('[solo] emitting join-match', matchId);
+      const ack = await ws.joinMatch(matchId);
+      console.log('[solo] join-match ack', ack);
+      console.log('[join] join-match ack', ack);
+      if (!ack?.ok) {
+        const reason = ack?.reason === 'not_in_match'
+          ? '用户不在该对局中（userId 与创建对局时不一致）'
+          : ack?.reason === 'no_session'
+            ? 'WS 未鉴权，请先连接后端'
+            : (ack?.message || '鉴权或房间不存在');
+        get().showToast(`加入对局失败: ${reason}`, 'warning');
+        set({ gameStatus: 'idle', matchId: null, matchFlow: null });
+        return;
+      }
+      set({
+        matchId,
+        role: (role as Role) ?? (ack.role as Role) ?? get().role,
+        gameStatus: 'matching',
+        waitingRoom: null,
+      });
+      get().showToast(`已加入对局 ${matchId} (${role ?? ack.role})`, 'success');
+      // snapshot 由 _applyServerSnapshot 异步灌入
+    } catch (err) {
+      console.error('[join] error', err);
+      get().showToast(`加入对局失败: ${(err as Error).message}`, 'danger');
+      set({ gameStatus: 'idle', matchId: null, matchFlow: null });
+    }
+  },
   
   revealReversalCard: (index) => set((s) => {
     if (s.reversalCards[index].revealed) return s;
-    const pickedRole = s.reversalCards[index].role;
+    const useBackendRole = s.matchFlow === 'online' && s.backendMode && !!s.matchId;
+    const pickedRole = useBackendRole ? s.role : s.reversalCards[index].role;
     return {
       role: pickedRole,
-      reversalCards: s.reversalCards.map((c, i) => i === index ? { ...c, revealed: true } : c),
+      reversalCards: s.reversalCards.map((c, i) =>
+        i === index ? { ...c, revealed: true, role: pickedRole } : c
+      ),
     };
   }),
-  
+
   randomizeMyRole: () => {
+    const state = get();
+    if (state.matchFlow === 'online' && state.backendMode) return;
     set((_s) => {
       const cards: [Role, Role, Role] = ['dealer', 'retail', 'regulator'];
       const shuffled = [...cards].sort(() => Math.random() - 0.5);
@@ -1322,17 +1990,26 @@ simulation: {
   },
   
   startMatch: () => {
-    set({
-      gameStatus: 'matching',
-      reversalCards: [
-        { role: 'dealer', revealed: false },
-        { role: 'retail', revealed: false },
-        { role: 'regulator', revealed: false },
-      ]
-    });
+    void get().startOnlineQuickMatch();
   },
   
-  cancelMatch: () => set({ gameStatus: 'idle' }),
+  cancelMatch: () => {
+    void get().cancelWaiting();
+  },
+
+  cancelWaiting: async () => {
+    const state = get();
+    if (state.backendMode && (state.waitingRoom || state.gameStatus === 'waiting')) {
+      const api = await import('../services/apiService');
+      await api.apiMatch.cancelWaiting(state.userId);
+    }
+    set({
+      gameStatus: 'idle',
+      matchFlow: null,
+      waitingRoom: null,
+      matchId: null,
+    });
+  },
   
   endMatch: () => {
     const state = get();
@@ -1404,6 +2081,54 @@ simulation: {
     }, 3500);
   },
 
+  showModal: (type, message, title) => {
+    set({ modal: { type, message, title } });
+  },
+
+  dismissModal: () => set({ modal: null }),
+
+  resetGameSession: () => {
+    const state = get();
+    const sim = state.simulation;
+    if (sim.lunchAutoTimer) clearTimeout(sim.lunchAutoTimer);
+    if (sim.dayAutoTimer) clearTimeout(sim.dayAutoTimer);
+    const positionValue = state.holdings.reduce((s, h) => s + h.marketPrice * h.shares, 0);
+    const totalAssets = state.cash + positionValue - state.borrowed;
+    set({
+      currentDay: 1,
+      currentTick: 0,
+      simulation: {
+        ...sim,
+        session: 'morning',
+        dailySettlement: null,
+        lunchAutoTimer: null,
+        dayAutoTimer: null,
+        dayOpenAssets: totalAssets > 0 ? totalAssets : STARTING_ASSETS,
+        dayOpenPrice: state.currentQuote.price,
+        _serverTickCount: 0,
+        _lastTimelineTick: 0,
+        _lastHoldingsUpdate: 0,
+        _sessionInitialized: false,
+      },
+    });
+  },
+
+  enterPlaying: () => {
+    get().resetGameSession();
+    set({ gameStatus: 'playing' });
+  },
+
+  _resetMatchToIdle: () => {
+    set({
+      gameStatus: 'idle',
+      matchFlow: null,
+      matchId: null,
+      waitingRoom: null,
+      modal: null,
+    });
+    get().setSection('overview');
+  },
+
   endLunchBreak: () => {
     const state = get();
     if (state.gameStatus !== 'playing') return;
@@ -1438,13 +2163,13 @@ simulation: {
 
     get().showToast('11:30 中午收盘｜13:00 下午开盘', 'info');
 
-    // Auto-resume afternoon after 90s (simulating 1.5h lunch break in fast-forward)
+    // Auto-resume afternoon after 2s lunch pause
     if (state.simulation.lunchAutoTimer) clearTimeout(state.simulation.lunchAutoTimer);
     const t = setTimeout(() => {
       if (get().simulation.session === 'lunch') {
         get().resumeAfternoon();
       }
-    }, 90000);
+    }, 2000);
     set((s) => ({ simulation: { ...s.simulation, lunchAutoTimer: t } }));
   },
 
@@ -1456,7 +2181,7 @@ simulation: {
     }
     set({
       gameStatus: 'playing',
-      simulation: { ...state.simulation, session: 'afternoon', dailySettlement: null, lunchAutoTimer: null },
+      simulation: { ...state.simulation, session: 'afternoon', dailySettlement: null, lunchAutoTimer: null, _sessionInitialized: false },
     });
   },
 
@@ -1501,13 +2226,13 @@ simulation: {
       },
     });
 
-    // Auto-advance to next day after 120s (2 minutes — user-requested buffer)
+    // Auto-advance to next day after 2s close pause
     if (state.simulation.dayAutoTimer) clearTimeout(state.simulation.dayAutoTimer);
     const t = setTimeout(() => {
       if (get().simulation.session === 'closed') {
         get().resumeNextDay();
       }
-    }, 120000);
+    }, 2000);
     set((s) => ({ simulation: { ...s.simulation, dayAutoTimer: t } }));
   },
 
@@ -1535,6 +2260,8 @@ simulation: {
         timestamp: Date.now(),
       },
       timelineData: [],
+      timelineBySymbol: {},
+      klinesBySymbol: {},
       klines: [],
       orderBook: {
         bids: Array.from({ length: 5 }, (_, i) => ({
@@ -1555,14 +2282,33 @@ simulation: {
         dayOpenPrice: lastPrice,
         dayOpenAssets: state.cash + state.holdings.reduce((s, h) => s + h.marketPrice * h.shares, 0) - state.borrowed,
         dayAutoTimer: null,
+        _sessionInitialized: false,
       },
     });
   },
 
   startSimulation: () => {
     const state = get();
-    if (state.simulation.timer) return; // already running
+    console.log('[startSim] called; status=', state.gameStatus, 'backend=', state.backendMode, 'tickInterval=', Math.max(60, Math.floor(3000 / (state.simulation.speed || 1))));
     if (state.gameStatus !== 'playing') return;
+    // 防御性：如果已有 timer，先清再起，避免双开
+    if (state.simulation.timer) {
+      clearInterval(state.simulation.timer);
+    }
+    if (state.simulation.klineTimer) clearInterval(state.simulation.klineTimer);
+    if (state.simulation.indicatorTimer) clearInterval(state.simulation.indicatorTimer);
+    if (state.simulation.blackSwanTimer) clearInterval(state.simulation.blackSwanTimer);
+
+    // Backend mode & 本地模式共享同一套 timer 框架，差别只在 processTick 内部：
+    //   backend → 价格从 server quote 拉，本 tick 只推 timeline / 维护 K 线
+    //   local   → GBM 算价格
+    // K 线聚合由独立 timer 触发（klineInterval = tickInterval * 8，约 24s @ 1x）。
+
+    // Pacing: 1 day = 120 ticks (60 morning + 60 afternoon, lunch break collapsed).
+    // Default speed (1x) targets ~6 min per simulated trading day.
+    //   1x → 3000ms/tick → 120 ticks = 360s = 6 min/day
+    //   2x → 1500ms/tick → 120 ticks = 180s = 3 min/day
+    //   4x →  750ms/tick → 120 ticks =  90s = 1.5 min/day
 
     // Pacing: 1 day = 120 ticks (60 morning + 60 afternoon, lunch break collapsed).
     // Default speed (1x) targets ~6 min per simulated trading day.
@@ -1624,6 +2370,7 @@ simulation: {
         klineTimer,
         blackSwanTimer,
         indicatorTimer,
+        _sessionInitialized: true,
       },
     });
 
@@ -1632,6 +2379,7 @@ simulation: {
 
   stopSimulation: () => {
     const s = get().simulation;
+    console.log('[stopSim] clearing timer=' + !!s.timer);
     if (s.timer) clearInterval(s.timer);
     if (s.klineTimer) clearInterval(s.klineTimer);
     if (s.newsTimer) clearTimeout(s.newsTimer);
@@ -1661,67 +2409,110 @@ simulation: {
         lunchAutoTimer: s.lunchAutoTimer,
         dayAutoTimer: s.dayAutoTimer,
         speed: s.speed,
+        _serverTickCount: s._serverTickCount,
+        _lastTimelineTick: s._lastTimelineTick,
+        _lastHoldingsUpdate: s._lastHoldingsUpdate,
       },
     });
   },
 
   processTick: () => {
     const state = get();
-    if (state.gameStatus !== 'playing') {
-      get().stopSimulation();
-      return;
-    }
+    // 不要在 tick 自己里 stopSimulation — 因为这一帧的 state.gameStatus 可能还在 transitioning
+    // （Playwright / Strict Mode 偶发）。改为只警告不 stop。
+    if (state.gameStatus !== 'playing') return;
+    // 每 50 次打一次心跳，避免 console flood
+    if (!get().simulation._tickLogCount) get().simulation._tickLogCount = 0;
+    const lc = get().simulation._tickLogCount as number;
+    if (lc % 30 === 0) console.log('[processTick] tick#' + state.currentTick + ' backend=' + state.backendMode + ' price=' + state.currentQuote.price);
+    // Backend mode: 价格由 server market:tick 驱动（见 _applyServerTick）。
+    // 但当前 all-in-one 的 processTick 也负责 tick 计数 / 时钟 / 午休 / 收盘。
+    // 我们分开做：backend mode 只推进“时间/日程/结算”等，不再对 prices 做额外 GBM。
+    const isBackend = state.backendMode;
 
-    // Geometric Brownian motion with a slight upward bias (the -0.48 offset).
-    // Per-symbol GBM step helper — shared by the selected symbol and every holding
-    // so their per-tick volatility stays consistent.
-    // Volatility raised from 0.0006 (~±0.03%/tick, which rendered as a flat line once
-    // "playing") to 0.005 (~±0.25%/tick) so live moves are visually comparable to the
-    // pre-game synthesized intraday series (Dashboard uses price * 0.0035 noise).
+    // 1) 价格
+    //    - local mode：由本地 GBM 驱动（包括 holdings 里的其它 symbol）
+    //    - backend mode：价格直接来自 _applyServerTick 推送的全量 market:tick，不做本地兜底 GBM
+    let newPrice: number;
+    let nextStockPrices: Record<string, number>;
+    let newVolume: number;
     const gbmStep = (prevPrice: number) => {
       const delta = (Math.random() - 0.48) * 0.005;
       return Math.max(1, prevPrice * (1 + delta));
     };
-
-    // Selected symbol: keep the exact currentQuote update semantics.
-    const selectedPrevPrice = state.stockPrices[state.currentQuote.symbol] ?? state.currentQuote.price;
-    const newPrice = gbmStep(selectedPrevPrice);
-    const newChange = newPrice - state.currentQuote.prevClose;
-    const newChangePct = (newChange / state.currentQuote.prevClose) * 100;
-    const newVolume = state.currentQuote.volume + Math.floor(Math.random() * 100);
-
-    // Build an updated per-symbol price map: selected symbol + every holding symbol,
-    // each stepping independently from its own previous price.
-    const nextStockPrices: Record<string, number> = { ...state.stockPrices };
-    nextStockPrices[state.currentQuote.symbol] = newPrice;
-    for (const h of state.holdings) {
-      if (h.symbol === state.currentQuote.symbol) continue;
-      const prev = state.stockPrices[h.symbol] ?? h.marketPrice ?? h.avgPrice;
-      nextStockPrices[h.symbol] = gbmStep(prev);
+    const gbmHeldSymbol = (sym: string): number => {
+      const held = state.holdings.find((h) => h.symbol === sym);
+      const prev = state.stockPrices[sym] ?? held?.avgPrice ?? held?.marketPrice ?? 1;
+      return gbmStep(prev);
+    };
+    if (isBackend) {
+      // 后端模式：current symbol 用 server 推过来的价格（全量 prices 也已经在 _applyServerTick 更新）
+      newPrice = state.currentQuote.price;
+      nextStockPrices = { ...state.stockPrices };
+      nextStockPrices[state.currentQuote.symbol] = newPrice;
+      newVolume = state.currentQuote.volume;
+    } else {
+      // 本地模式：current symbol 自己 GBM；持仓的其它 symbol 各自 GBM
+      const selectedPrevPrice = state.stockPrices[state.currentQuote.symbol] ?? state.currentQuote.price;
+      newPrice = gbmStep(selectedPrevPrice);
+      nextStockPrices = { ...state.stockPrices };
+      nextStockPrices[state.currentQuote.symbol] = newPrice;
+      for (const h of state.holdings) {
+        if (h.symbol === state.currentQuote.symbol) continue;
+        nextStockPrices[h.symbol] = gbmHeldSymbol(h.symbol);
+      }
+      newVolume = state.currentQuote.volume + Math.floor(Math.random() * 100);
     }
 
-    // Dealer energy slowly regenerates each tick (capped at 100) so a session's
-    // manipulation budget recovers over time without being infinite.
-    const ENERGY_REGEN_PER_TICK = 0.5;
-    const dr = state.dealerResources;
-    const regenDealerResources = dr
-      ? { ...dr, energy: Math.min(100, dr.energy + ENERGY_REGEN_PER_TICK) }
+    const newChange = newPrice - state.currentQuote.prevClose;
+    const newChangePct = (newChange / state.currentQuote.prevClose) * 100;
+
+    // Dealer energy regen 已移除 — 取消 energy 机制后庄家只受 cash 约束
+    const regenDealerResources = state.dealerResources
+      ? { ...state.dealerResources, energy: 0 }
       : null;
 
+    const sym2 = state.currentQuote.symbol;
+    // 后端模式下 timeline 由 _applyServerTick 按 tickInterval 节流推进（保持 1x=3s/点
+    //   → 1 天 = 120 tick × 3s = 6 分钟），这里不重复推，否则同一秒出现两次重复点。
+    // 本地模式下 processTick 自己跑 GBM，按 tickInterval 自然推。
+    let tlNext = state.timelineData;
+    let tlBySymbolNext = state.timelineBySymbol;
+    if (!isBackend) {
+      // 本地模式：把每个 holdings symbol 的 GBM 新价都追加到它自己的 timelineBySymbol，
+      // 否则切换到非当前 main symbol 时图表会退回静态 mock。
+      tlBySymbolNext = { ...state.timelineBySymbol };
+      for (const h of state.holdings) {
+        const symH = h.symbol;
+        const px = nextStockPrices[symH] ?? h.marketPrice ?? h.avgPrice;
+        if (!Number.isFinite(px) || px <= 0) continue;
+        const curTl = tlBySymbolNext[symH] ?? [];
+        const lastPushed = curTl.length ? curTl[curTl.length - 1] : undefined;
+        if (px !== lastPushed) {
+          tlBySymbolNext = {
+            ...tlBySymbolNext,
+            [symH]: [...curTl, px].slice(-500),
+          };
+        }
+      }
+      tlNext = tlBySymbolNext[sym2] ?? [];
+    }
+    // 后端模式 currentQuote.price 已经被 _applyServerTick 实时更新，这里 newPrice === state.currentQuote.price 是 no-op；
+    //   但 high/low/timestamp 还是要维护。stockPrices 同理。
     set({
       currentQuote: {
         ...state.currentQuote,
         price: newPrice,
         change: newChange,
-        changePercent: newChangePct,
+        changePercent: state.currentQuote.prevClose > 0 ? newChangePct : state.currentQuote.changePercent,
         volume: newVolume,
         high: Math.max(state.currentQuote.high, newPrice),
         low: Math.min(state.currentQuote.low, newPrice),
         timestamp: Date.now(),
       },
-      timelineData: [...state.timelineData, newPrice].slice(-500),
+      timelineData: tlNext,
+      timelineBySymbol: tlBySymbolNext,
       currentTick: state.currentTick + 1,
-      // Track per-symbol price for multi-symbol mark-to-market.
       stockPrices: nextStockPrices,
       dealerResources: regenDealerResources,
     });
@@ -1733,12 +2524,16 @@ simulation: {
     const TICKS_PER_HALF = 60;
     const nextTick = state.currentTick + 1;
     const session = state.simulation.session;
-    if (session === 'morning' && nextTick >= TICKS_PER_HALF) {
-      // 11:30 上午收盘 → 午休
-      get().endLunchBreak();
-    } else if (session === 'afternoon' && nextTick >= TICKS_PER_HALF) {
-      // 15:00 全天收盘
-      get().endTradingDay();
+    // Only evaluate session boundaries once the tick engine is armed and we have
+    // advanced past the opening tick — prevents stale tick/day from firing at match start.
+    if (state.simulation._sessionInitialized) {
+      if (session === 'morning' && nextTick >= TICKS_PER_HALF) {
+        // 11:30 上午收盘 → 午休
+        get().endLunchBreak();
+      } else if (session === 'afternoon' && nextTick >= TICKS_PER_HALF) {
+        // 15:00 全天收盘
+        get().endTradingDay();
+      }
     }
 
     // Multi-symbol mark-to-market: every holding uses its own stockPrices[symbol].
@@ -1802,7 +2597,8 @@ simulation: {
       return;
     }
     const last = state.simulation.lastKlineOpen;
-    const recent = state.timelineData;
+    const sym3 = state.currentQuote.symbol;
+    const recent = state.timelineBySymbol[sym3] ?? state.timelineData;
     const slice = recent.length > 0 ? recent : [state.currentQuote.price];
     const open = last.price;
     const close = state.currentQuote.price;
@@ -1810,10 +2606,15 @@ simulation: {
     const low = Math.min(...slice, open);
     const volume = state.currentQuote.volume;
     const kline = { timestamp: last.time, open, high, low, close, volume };
-    set((s) => ({
-      klines: [...s.klines, kline].slice(-100),
-      simulation: { ...s.simulation, lastKlineOpen: { price: close, time: Date.now() } },
-    }));
+    set((s) => {
+      const curKl = s.klinesBySymbol[sym3] ?? [];
+      const newKl = [...curKl, kline].slice(-100);
+      return {
+        klines: sym3 === s.currentQuote.symbol ? newKl : s.klines,
+        klinesBySymbol: { ...s.klinesBySymbol, [sym3]: newKl },
+        simulation: { ...s.simulation, lastKlineOpen: { price: close, time: Date.now() } },
+      };
+    });
   },
 
   recalculateIndicators: () => {
@@ -2140,5 +2941,748 @@ simulation: {
     });
 
     get().showToast(`⚠️ 黑天鹅事件: ${ev.label} - 价格变动 ${((mult - 1) * 100).toFixed(1)}%`, 'danger');
+  },
+
+  // ============================================================
+  // Backend adapter implementation
+  // ============================================================
+  // 思路：
+  //   1. connectBackend() 探测 REST /health，能通就 guest 登录拿 token，连 WS。
+  //      连上 = backendMode = true；后续行情/下单都走 wsService。
+  //   2. UI 调 store action 时（placeOrder/executeDealerAction），action 内
+  //      if (state.backendMode) → 走 wsService.sendXxx() + 监听 trade:result。
+  //      否则保持原本地模拟代码不动。
+  //   3. server 通过 WS 推回的 market:tick / market:news / market:special /
+  //      trade:result / dealer:result / match:end 等事件，都映射到
+  //      _applyServerXxx() 方法直接改 store。
+  //   4. 联调失败 / 后端挂了 → disconnectBackend() 即可降级回本地。
+  // ============================================================
+
+  connectBackend: async () => {
+    const { apiAuth, pingBackend, apiMarket } = await import('../services/apiService');
+    const wsSvc = await import('../services/wsService');
+
+    const ok = await pingBackend();
+    if (!ok) {
+      // 后端不可达，保持本地模拟；不抛错。
+      get().showToast('后端未启用 — 使用本地模拟', 'info');
+      return false;
+    }
+    const auth = await apiAuth.guest(get().userId);
+    if (auth.code !== 0 || !auth.data) {
+      get().showToast(`后端鉴权失败: ${auth.message}`, 'warning');
+      return false;
+    }
+    const token = auth.data.token;
+    const canonicalUserId = auth.data.user?.id ?? get().userId;
+    set({ authToken: token, backendMode: true, wsStatus: 'connecting', userId: canonicalUserId });
+    console.log('[connectBackend] guest userId=', canonicalUserId);
+
+    const sock = wsSvc.connect();
+
+    wsSvc.on('market:tick', (payload) => get()._applyServerTick(payload));
+    wsSvc.on('market:news', (news) => get()._applyServerNews(news));
+    wsSvc.on('market:special', (payload) => get()._applyServerBlackSwan(payload));
+    wsSvc.on('market:update', (payload) => get()._applyServerMarketUpdate(payload));
+    wsSvc.on('trade:result', (payload) => get()._applyTradeResult(payload));
+    wsSvc.on('dealer:result', (payload) => get()._applyDealerResult(payload));
+    wsSvc.on('regulator:result', (payload) => get()._applyRegulatorResult(payload));
+    wsSvc.on('regulator:freeze', (payload) => get()._applyRegulatorFreeze(payload));
+    wsSvc.on('regulator:warn', (payload) => get()._applyRegulatorFreeze({ ...payload, restrictionType: 'warn' }));
+    wsSvc.on('regulator:kick', (payload) => get()._applyRegulatorKick(payload));
+    wsSvc.on('match:tick', (payload) => get()._applyMatchTick(payload));
+    wsSvc.on('match:snapshot', (snap) => get()._applyServerSnapshot(snap));
+    wsSvc.on('match:end', (payload) => get()._applyMatchEnd(payload));
+    wsSvc.on('match:disconnect-warning', (p) => get()._handleDisconnectWarning(p));
+    wsSvc.on('match:peer-disconnect', () => {
+      get().showToast('对手断线，等待重连…', 'warning');
+    });
+    wsSvc.on('match:forfeit', (p) => get()._handleMatchForfeit(p));
+    wsSvc.on('match:destroyed', (p) => get()._handleMatchDestroyed(p));
+    wsSvc.on('match:timeout', (p) => { get()._handleMatchTimeout(p); });
+    wsSvc.on('room:update', (p) => get()._handleRoomUpdate(p));
+    wsSvc.on('room:ready', (p) => {
+      set((s) => ({
+        gameStatus: 'waiting',
+        waitingRoom: s.waitingRoom
+          ? { ...s.waitingRoom, currentPlayers: p.currentPlayers, requiredPlayers: p.requiredPlayers }
+          : {
+              code: p.code ?? null,
+              currentPlayers: p.currentPlayers,
+              requiredPlayers: p.requiredPlayers,
+              countdown: null,
+              mode: p.mode ?? 'room',
+            },
+      }));
+    });
+    wsSvc.on('room:countdown', (p) => get()._handleRoomCountdown(p));
+    wsSvc.on('match:start', (p) => { void get()._handleMatchStart(p); });
+    wsSvc.on('room:closed', (p) => {
+      get().showToast(p?.message ?? '房间已关闭', 'warning');
+      get()._resetMatchToIdle();
+    });
+    wsSvc.on('match:downgrade', (p) => {
+      get().showToast(p?.message ?? '对局已降级为双人对战', 'info');
+    });
+
+    wsSvc.onWsStatus((s) => {
+      set({ wsStatus: s });
+      const st = get();
+      if (s === 'disconnected' && st.matchId && st.gameStatus === 'playing') {
+        get().showModal('disconnect', '连接中断，30秒内重连将保留对局', '连接中断');
+        get().showToast('连接中断，30秒内重连将保留对局', 'warning');
+      }
+      if (s === 'connected' && st.matchId && st.backendMode) {
+        void get()._attemptReconnectMatch();
+      }
+    });
+
+    const onConnect = async () => {
+      try {
+        const ack = await wsSvc.auth(token);
+        if (ack?.ok) {
+          get().showToast('后端已连接', 'success');
+          const mid = get().matchId;
+          if (mid) await get()._attemptReconnectMatch();
+        } else {
+          get().showToast('WS 鉴权失败', 'warning');
+        }
+      } catch (err) {
+        console.error('[connectBackend] auth error', err);
+        get().showToast(`WS 鉴权异常: ${(err as Error).message}`, 'danger');
+      }
+    };
+    sock.on('connect', onConnect);
+    if (sock.connected) onConnect();
+
+    apiMarket.stocks().then((r) => {
+      if (r.code === 0 && Array.isArray(r.data)) {
+        set({ allStocks: r.data as any });
+      }
+    });
+
+    return true;
+  },
+
+  disconnectBackend: () => {
+    import('../services/wsService').then((wsSvc) => {
+      wsSvc.disconnect();
+    });
+    set({ backendMode: false, wsStatus: 'idle', authToken: null, matchId: null });
+  },
+
+  /**
+   * 把 server market:tick payload 同步到本地 store：
+   *  - quote → currentQuote + stockPrices（多 symbol mark-to-market）
+   *  - orderBook
+   *  - timeline → 节流按 simulation.speed 动态算：1x=3000ms、4x=750ms。
+   *    价格变了才推（避免重复值），节流窗口内不推。
+   *  帧率敏感（200ms 一次），所以只做最少 set()。
+   */
+  _applyServerTick: (payload) => {
+    const state = get();
+    // 兼容两种 payload：
+    //   1) { symbol, quote, orderBook }                 （旧）
+    //   2) { quotes: { [sym]: Quote }, orderBooks }  （新，全量）
+    const quotesBySymbol: Record<string, any> | undefined = payload?.quotes
+      ? payload.quotes
+      : payload?.quote && payload?.symbol
+        ? { [payload.symbol]: payload.quote }
+        : undefined;
+    if (!quotesBySymbol) return;
+
+    const orderBooksBySymbol: Record<string, any> | undefined = payload?.orderBooks
+      ? payload.orderBooks
+      : payload?.orderBook && payload?.symbol
+        ? { [payload.symbol]: payload.orderBook }
+        : undefined;
+
+    const activeSymbol = state.currentQuote.symbol;
+    const now = Date.now();
+
+    // 1. stockPrices（多 symbol mark-to-market 用 + 为 charts 提供实时序列）
+    const stockPrices: Record<string, number> = { ...state.stockPrices };
+    let updatedAny = false;
+    for (const [sym, q] of Object.entries(quotesBySymbol)) {
+      const px = Number.isFinite((q as any)?.price) ? (q as any).price : null;
+      if (px === null || px <= 0) continue;
+      stockPrices[sym] = px;
+      updatedAny = true;
+    }
+    if (!updatedAny) return;
+
+    // 2. currentQuote — 用 activeSymbol 对应的 quote 更新顶部字段
+    const activeQuote = quotesBySymbol[activeSymbol];
+    const activePx = stockPrices[activeSymbol];
+    const currentQuote =
+      activeQuote && Number.isFinite((activeQuote as any)?.price) && activePx
+        ? {
+            ...state.currentQuote,
+            symbol: activeSymbol,
+            price: activePx,
+            change: Number.isFinite((activeQuote as any).change)
+              ? (activeQuote as any).change
+              : activePx - state.currentQuote.prevClose,
+            changePercent: Number.isFinite((activeQuote as any).changePercent)
+              ? (activeQuote as any).changePercent
+              : state.currentQuote.changePercent,
+            volume: Number.isFinite((activeQuote as any).volume)
+              ? (activeQuote as any).volume
+              : state.currentQuote.volume,
+            high: Number.isFinite((activeQuote as any).high)
+              ? (activeQuote as any).high
+              : state.currentQuote.high,
+            low: Number.isFinite((activeQuote as any).low)
+              ? (activeQuote as any).low
+              : state.currentQuote.low,
+            open: Number.isFinite((activeQuote as any).open)
+              ? (activeQuote as any).open
+              : state.currentQuote.open,
+            prevClose: Number.isFinite((activeQuote as any).prevClose)
+              ? (activeQuote as any).prevClose
+              : state.currentQuote.prevClose,
+            timestamp: now,
+          }
+        : state.currentQuote;
+
+    // 3. timeline 推送（节流）：把每个 symbol 的实时价格追加到自己的 timelineBySymbol
+    const simSpeed = state.simulation.speed || 1;
+    const tickInterval = Math.max(250, Math.floor(3000 / simSpeed));
+    const lastTickTime = get().simulation._lastTimelineTick ?? 0;
+    const throttleElapsed = now - lastTickTime >= tickInterval;
+
+    let timelineBySymbol = state.timelineBySymbol;
+    let timelineData = state.timelineData;
+    if (throttleElapsed) {
+      const nextTimelineBySymbol: Record<string, number[]> = { ...state.timelineBySymbol };
+      for (const sym of Object.keys(quotesBySymbol)) {
+        const px = stockPrices[sym];
+        if (!Number.isFinite(px) || px <= 0) continue;
+        const curTl = nextTimelineBySymbol[sym] ?? [];
+        const lastPushed = curTl.length ? curTl[curTl.length - 1] : undefined;
+        if (px !== lastPushed) {
+          nextTimelineBySymbol[sym] = [...curTl, px].slice(-500);
+        }
+      }
+      timelineBySymbol = nextTimelineBySymbol;
+      timelineData = nextTimelineBySymbol[activeSymbol] ?? state.timelineData;
+      set((s) => ({ simulation: { ...s.simulation, _lastTimelineTick: now } }));
+    }
+
+    // 4. mark-to-market (持仓现值) — 用更新后的 stockPrices 重算 totalAssets
+    //    Holding 接口用的是 shares，不是 quantity；以前误用 h.quantity 让 positionValue 变 NaN → totalAssets = NaN。
+    let positionValue = 0;
+    for (const h of state.holdings) {
+      const shares = Number.isFinite(h.shares) ? h.shares : 0;
+      if (shares <= 0) continue;
+      const px = stockPrices[h.symbol] ?? h.marketPrice ?? h.avgPrice ?? 0;
+      const safePx = Number.isFinite(px) && px > 0 ? px : 0;
+      positionValue += safePx * shares;
+    }
+    const safeCash = Number.isFinite(state.cash) ? state.cash : 0;
+    const safeBorrowed = Number.isFinite(state.borrowed) ? state.borrowed : 0;
+    const totalAssets = Math.max(0, safeCash + positionValue - safeBorrowed);
+
+    // 5. 写入价格 / 盘口 / 总资产 / timeline
+    const activeOrderBook = orderBooksBySymbol ? orderBooksBySymbol[activeSymbol] : undefined;
+    set({
+      stockPrices,
+      currentQuote,
+      orderBook: activeOrderBook ?? state.orderBook,
+      totalAssets,
+      portfolioTotal: totalAssets,
+      playerCash: state.cash,
+      timelineData,
+      timelineBySymbol,
+    });
+
+    // 7. indicators 节流重算（~25 个 server tick 一次 ≈ 5s）
+    const nextCount = (get().simulation._serverTickCount ?? 0) + 1;
+    set((s) => ({ simulation: { ...s.simulation, _serverTickCount: nextCount } }));
+    if (nextCount % 25 === 0) {
+      get().recalculateIndicators();
+    }
+  },
+
+  /**
+   * server match:snapshot — 对局刚 join 上时给的全量。
+   * 覆盖当前 quote / klines / orderBook / indicators，并把 role 写回 store。
+   */
+  _applyServerSnapshot: (snap) => {
+    if (!snap) return;
+    const state = get();
+    const isOffline = state.matchFlow === 'offline';
+    console.log('[snapshot] arrived; pre-state.gameStatus =', state.gameStatus, 'snap.role=', snap.role, 'matchFlow=', state.matchFlow);
+    const role = (snap.role ?? state.role) as Role;
+    const symbol = snap.symbol ?? state.currentQuote.symbol;
+    const quote = snap.quote ?? state.currentQuote;
+    const klines = Array.isArray(snap.klines) ? snap.klines : state.klines;
+    const orderBook = snap.orderBook ?? state.orderBook;
+    // merge 防止后端没返回 kdj/wr/dmi/vr 时把本地默认值洗掉
+    const indicators = snap.indicators ? { ...state.indicators, ...snap.indicators } : state.indicators;
+    const stockPrices = { ...state.stockPrices, [symbol]: quote.price };
+
+    set({
+      role,
+      matchId: snap.matchId ?? state.matchId,
+      currentQuote: { ...state.currentQuote, ...quote, symbol },
+      klines,
+      klinesBySymbol: { ...state.klinesBySymbol, [symbol]: klines },
+      // 把 snapshot 推过来的 timeline 也存到按 symbol 分桶里
+      timelineBySymbol: snap.timeline
+        ? { ...state.timelineBySymbol, [symbol]: (snap.timeline as any[]).map((p: any) => p.price ?? p).filter((x: any) => typeof x === 'number') }
+        : state.timelineBySymbol,
+      orderBook,
+      indicators,
+      stockPrices,
+      userName: state.userName || `Player_${state.userId.slice(-4)}`,
+      matchOpponentName: state.matchOpponentName || 'Opponent',
+      ...(typeof snap.currentDay === 'number' ? { currentDay: snap.currentDay } : {}),
+      ...(typeof snap.currentTick === 'number' ? { currentTick: snap.currentTick } : {}),
+    });
+
+    if (isOffline) {
+      console.log('[snapshot] offline flow → playing directly');
+      get().enterPlaying();
+      get().showToast(`单人练习已开始 · 身份：${role}`, 'success');
+      return;
+    }
+
+    // 生成 reversal cards（如果还没有），并把 server 分配的角色作为用户身份
+    const existing = get().reversalCards;
+    const myRole = get().role;
+    const needCards = existing.length === 0 || !existing.some(c => c.revealed);
+    if (needCards) {
+      const all: Role[] = ['dealer', 'retail', 'regulator'];
+      // 关键：seed 3 张"全部隐藏"的卡，让用户主动翻牌。server 分配的角色记在 role，
+      //      但不在 reversalCards 上预 reveal，避免用户困惑"为什么我的卡已经翻了"。
+      const ordered: Role[] = [myRole, ...all.filter(r => r !== myRole)];
+      set({
+        reversalCards: ordered.map(r => ({ role: r, revealed: false })),
+      });
+      console.log('[snapshot] seeded 3 hidden reversalCards; myRole=', myRole);
+    }
+    // matching → reversed 由 MatchOverlay 的 useEffect 推进；不在 snapshot 里抢
+    console.log('[snapshot] post-state.gameStatus =', get().gameStatus);
+    get().showToast(`已加入对局 ${snap.matchId ?? ''}，身份：${role}`, 'success');
+  },
+
+  _applyServerNews: (news) => {
+    if (!news) return;
+    get().addNews({
+      id: `srv_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      type: (news.type as any) ?? 'unverified',
+      title: news.title ?? news.content ?? '市场快讯',
+      source: news.source ?? 'Breaking',
+      tick: get().currentTick,
+      time: '刚刚',
+      timestamp: Date.now(),
+      content: news.content,
+    });
+  },
+
+  _applyServerBlackSwan: (payload) => {
+    if (!payload) return;
+    const state = get();
+    const { symbol, newPrice, label, multiplier } = payload;
+    // 直接调本地 triggerBlackSwan 的逻辑，但 server 已经定好价格
+    // 这里我们做最小实现：直接改 quote 然后发 toast
+    set({
+      currentQuote: { ...state.currentQuote, price: newPrice },
+      stockPrices: { ...state.stockPrices, [symbol]: newPrice },
+    });
+    get().addAlert({
+      id: `bs_srv_${Date.now()}`,
+      severity: 'high',
+      title: `⚠️ Black Swan: ${label}`,
+      description: `市场剧变 ${((multiplier - 1) * 100).toFixed(1)}%（服务端触发）`,
+      timestamp: Date.now(),
+      source: 'Server',
+    });
+    get().showToast(`⚠️ 黑天鹅: ${label}`, 'danger');
+  },
+
+  _applyServerMarketUpdate: (payload) => {
+    if (!payload) return;
+    const state = get();
+    const sym = payload.symbol;
+    if (payload.quote) {
+      const tl = Array.isArray(payload.timeline) ? payload.timeline.map((p: any) => p.price ?? p).filter((x: any) => typeof x === 'number') : null;
+      const isMain = sym === state.currentQuote.symbol;
+      const partial: any = {
+        currentQuote: { ...state.currentQuote, ...payload.quote, symbol: sym },
+        stockPrices: { ...state.stockPrices, [sym]: payload.quote.price },
+        orderBook: payload.orderBook ?? state.orderBook,
+        indicators: payload.indicators ? { ...state.indicators, ...payload.indicators } : state.indicators,
+      };
+      if (Array.isArray(payload.klines)) {
+        partial.klinesBySymbol = { ...state.klinesBySymbol, [sym]: payload.klines };
+        if (isMain) partial.klines = payload.klines;
+      }
+      if (tl) {
+        partial.timelineBySymbol = { ...state.timelineBySymbol, [sym]: tl };
+        if (isMain) partial.timelineData = tl;
+      }
+      set(partial);
+    }
+  },
+
+  /**
+   * trade:result 服务端回执 — 把成交回填到本地 holdings / cash / orderHistory。
+   * 这是关键：placeOrder 不再直接改 holdings，而是发出去等这里回填。
+   */
+  _applyTradeResult: (payload) => {
+    if (!payload) return;
+    if (payload.code !== 0) {
+      get().showToast(`交易失败: ${payload.message ?? '未知错误'}`, 'warning');
+      return;
+    }
+    const { side, data } = payload;
+    // 后端返回的 data 形如 { orderId, portfolio: { cash, holdings, borrowed, totalAssets, ... } }
+    if (!data?.portfolio) {
+      // 兜底：若后端没返 portfolio，按 orderId 简单记录
+      get().showToast(`${side === 'buy' ? '买入' : '卖出'} 成功`, 'success');
+      return;
+    }
+    const { cash, holdings, borrowed, totalAssets } = data.portfolio;
+    const state = get();
+    // 合成一个 OrderRecord 入 history（symbol/price/qty 从 store 当前选中推算）
+    const lastOrder: OrderRecord = {
+      id: data.orderId ?? `srv_${Date.now()}`,
+      symbol: state.currentQuote.symbol,
+      type: 'market',
+      side: side,
+      price: state.currentQuote.price,
+      quantity: 0, // 具体数量本端没记录，UI 上允许显示 '—'
+      status: 'filled',
+      timestamp: Date.now(),
+    };
+    set({
+      cash,
+      playerCash: cash,
+      borrowed: borrowed ?? state.borrowed,
+      holdings: holdings ?? state.holdings,
+      totalAssets: totalAssets ?? state.totalAssets,
+      portfolioTotal: totalAssets ?? state.portfolioTotal,
+      orderHistory: [lastOrder, ...state.orderHistory].slice(0, 100),
+      totalTradeCount: state.totalTradeCount + 1,
+    });
+    get().showToast(`${side === 'buy' ? '买入' : '卖出'} 成功`, 'success');
+  },
+
+  _applyDealerResult: (payload) => {
+    if (!payload) return;
+    if (payload.code !== 0) {
+      console.warn('[Dealer] 后端返回错误', payload);
+      get().showToast(`庄家操作失败: ${payload.message ?? ''}`, 'warning');
+      return;
+    }
+    const { data } = payload;
+    console.log('[Dealer] _applyDealerResult', data);
+    if (data?.resources) {
+      const state = get();
+      set({
+        dealerResources: data.resources,
+        dealerInfo: state.dealerInfo
+          ? { ...state.dealerInfo, resources: data.resources }
+          : null,
+      });
+      // 庄家操作本身会给 manipulation 加分（这里粗略同步，监管实际计算在 server）
+      const delta = (data.resources.riskIndex ?? 0) - (state.dealerResources?.riskIndex ?? 0);
+      if (delta > 0) get().adjustScores({ manipulation: delta });
+    }
+    // 服务端 effect 字段兼容 pump/press (newPrice)、accumulate/distribute (price)、wash/spoof
+    // 关键：这里直接改 store，不再走 _applyServerTick —
+    //   1. _applyServerTick 会用 payload.orderBook 覆盖 store.orderBook，而庄家结果没带盘口
+    //      → 旧逻辑会把盘口写成 null，导致 UI 显示空白。
+    //   2. _applyServerTick 用 2.5s 节流，pump 后第一次价格变化可能被丢掉 → K 线变平。
+    //   3. _applyServerTick 还会重算 totalAssets（触发 Bug 1 那条路径），用朴素 set 更直接。
+    const newPriceRaw = data?.effect?.newPrice ?? data?.effect?.price;
+    if (typeof newPriceRaw === 'number' && Number.isFinite(newPriceRaw) && newPriceRaw > 0) {
+      const state = get();
+      const sym = data?.symbol ?? state.currentQuote.symbol;
+      const newPrice = newPriceRaw;
+      console.log('[Dealer] effect price push', sym, newPrice);
+
+      const curTl = state.timelineBySymbol[sym] ?? [];
+      const tlNext = [...curTl, newPrice].slice(-500);
+      const isMain = sym === state.currentQuote.symbol;
+      const nextQuote = isMain
+        ? {
+            ...state.currentQuote,
+            price: newPrice,
+            change: newPrice - state.currentQuote.prevClose,
+            changePercent: state.currentQuote.prevClose > 0
+              ? ((newPrice - state.currentQuote.prevClose) / state.currentQuote.prevClose) * 100
+              : state.currentQuote.changePercent,
+            high: Math.max(state.currentQuote.high, newPrice),
+            low: Math.min(state.currentQuote.low, newPrice),
+            timestamp: Date.now(),
+          }
+        : state.currentQuote;
+
+      // mark-to-market 持仓
+      const stockPrices: Record<string, number> = { ...state.stockPrices, [sym]: newPrice };
+      let positionValue = 0;
+      for (const h of state.holdings) {
+        const shares = Number.isFinite(h.shares) ? h.shares : 0;
+        if (shares <= 0) continue;
+        const px = h.symbol === sym
+          ? newPrice
+          : (stockPrices[h.symbol] ?? state.currentQuote.price ?? h.marketPrice ?? h.avgPrice ?? 0);
+        const safePx = Number.isFinite(px) && px > 0 ? px : 0;
+        positionValue += safePx * shares;
+      }
+      const safeCash = Number.isFinite(state.cash) ? state.cash : 0;
+      const safeBorrowed = Number.isFinite(state.borrowed) ? state.borrowed : 0;
+      const totalAssets = Math.max(0, safeCash + positionValue - safeBorrowed);
+
+      set({
+        currentQuote: nextQuote,
+        stockPrices,
+        timelineBySymbol: { ...state.timelineBySymbol, [sym]: tlNext },
+        timelineData: isMain ? tlNext : state.timelineData,
+        totalAssets,
+        portfolioTotal: totalAssets,
+        // 注意：保留 orderBook / indicators / 高低轨，不在这里动它们。
+        holdings: state.holdings.map((h) => h.symbol === sym
+          ? {
+              ...h,
+              marketPrice: newPrice,
+              pnl: (newPrice - h.avgPrice) * (Number.isFinite(h.shares) ? h.shares : 0),
+              pnlPercent: h.avgPrice > 0 ? ((newPrice - h.avgPrice) / h.avgPrice) * 100 : 0,
+            }
+          : h),
+      });
+    }
+    // wash: 把成交量刷到 quote.volume
+    const volFactor = data?.effect?.volumeFactor;
+    if (typeof volFactor === 'number' && data?.symbol) {
+      const state = get();
+      const sym = data.symbol;
+      const cur = state.currentQuote;
+      if (cur.symbol === sym) {
+        const newVol = Math.round(cur.volume * volFactor);
+        set({
+          currentQuote: { ...cur, volume: newVol },
+          stockPrices: { ...state.stockPrices, [sym]: cur.price },
+        });
+      }
+    }
+    get().showToast(`庄家操作成功`, 'success');
+  },
+
+  _applyRegulatorFreeze: (payload) => {
+    if (!payload?.symbol) return;
+    const state = get();
+    const { symbol, maxSingle, maxDaily, expiresTick, durationTicks, freezeTicks, restrictionType } = payload;
+    const type = restrictionType ?? 'freeze';
+    const ticks = durationTicks ?? freezeTicks ?? (type === 'warn' ? WARN_TICKS : FREEZE_TICKS);
+    set((s) => ({
+      stockRestrictions: {
+        ...s.stockRestrictions,
+        [symbol]: {
+          symbol,
+          maxSingle,
+          maxDaily,
+          expiresTick,
+          reason: type === 'warn' ? '监管警告' : '监管冻结',
+          restrictionType: type,
+        },
+      },
+    }));
+    if (state.role === 'dealer') {
+      const label = type === 'warn' ? '警告' : '冻结';
+      get().showToast(
+        `${symbol} 监管${label}：单笔上限 ${formatWan(maxSingle)}，持续 ${ticks} tick`,
+        type === 'warn' ? 'info' : 'warning',
+      );
+    } else if (state.role === 'retail') {
+      get().showToast(`监管对 ${symbol} 实施了交易限制`, 'info');
+    }
+  },
+
+  _applyRegulatorKick: (payload) => {
+    if (!payload) return;
+    const state = get();
+    const { penalizedUserId, opponentId, fine } = payload;
+    if (penalizedUserId === state.userId) {
+      get().showModal('kicked', `你被监管踢出，罚款 ${formatWan(fine)}`, '监管处罚');
+      set({ gameStatus: 'settlement' });
+      get().stopSimulation();
+    } else if (opponentId === state.userId) {
+      get().showToast('对手被监管踢出，你获胜', 'success');
+      set({ gameStatus: 'settlement', cash: state.cash + fine, playerCash: state.cash + fine });
+      get().stopSimulation();
+    }
+  },
+
+  _applyRegulatorResult: (payload: { code: number; data?: any; message?: string; _alertId?: string }) => {
+    if (!payload) return;
+    const alertId = payload._alertId ?? payload.data?.alertId ?? payload.data?.effect?.alertId;
+    if (payload.code !== 0) {
+      get().showToast(`监管操作失败: ${payload.message ?? ''}`, 'warning');
+      return;
+    }
+    const data = payload.data;
+    if (typeof data?.justiceScore === 'number') {
+      set({ justiceScore: data.justiceScore });
+    }
+    if (data?.scores) {
+      set({ regulatoryScores: data.scores, scores: data.scores });
+    }
+    const effect = data?.effect;
+    if (effect?.symbol && effect?.maxSingle) {
+      get()._applyRegulatorFreeze({
+        symbol: effect.symbol,
+        maxSingle: effect.maxSingle,
+        maxDaily: effect.maxDaily,
+        expiresTick: effect.expiresTick,
+        durationTicks: effect.durationTicks,
+        restrictionType: effect.restrictionType ?? (effect.warned ? 'warn' : 'freeze'),
+      });
+    }
+    if (effect?.fine && effect?.penalizedUserId) {
+      get()._applyRegulatorKick({
+        penalizedUserId: effect.penalizedUserId,
+        opponentId: effect.opponentId,
+        fine: effect.fine,
+        symbol: effect.symbol,
+      });
+    }
+    if (alertId) {
+      set((s) => ({ alerts: s.alerts.filter((a) => a.id !== alertId) }));
+    }
+    const actionLabel = effect?.warned ? '警告' : effect?.fine ? '踢出' : effect?.restrictionType === 'freeze' ? '冻结' : '执法';
+    get().showToast(`监管${actionLabel}已执行`, 'success');
+  },
+
+  _applyMatchTick: (payload) => {
+    if (typeof payload?.currentTick === 'number') {
+      set({ currentTick: payload.currentTick });
+      // Prune expired restrictions
+      const state = get();
+      const next: Record<string, StockRestriction> = {};
+      for (const [sym, r] of Object.entries(state.stockRestrictions)) {
+        if (r.expiresTick > payload.currentTick) next[sym] = r;
+      }
+      if (Object.keys(next).length !== Object.keys(state.stockRestrictions).length) {
+        set({ stockRestrictions: next });
+      }
+    }
+  },
+
+  _applyMatchEnd: (payload) => {
+    if (!payload) return;
+    get().showToast(`对局 ${payload.matchId} 已结束${payload.winnerId ? `，胜者 ${payload.winnerId}` : ''}`, 'info');
+    set({ gameStatus: 'settlement' });
+    get().stopSimulation();
+  },
+
+  _handleDisconnectWarning: (payload) => {
+    const msg = payload?.message ?? '连接中断，30秒内重连将保留对局';
+    get().showModal('disconnect', msg, '连接中断');
+    get().showToast(msg, 'warning');
+  },
+
+  _handleMatchForfeit: (payload) => {
+    if (!payload) return;
+    const state = get();
+    const isSelf = payload.self || payload.userId === state.userId;
+    if (isSelf) {
+      get().showModal('forfeit', payload.message ?? '你已被判定弃权', '弃权');
+      get().showToast('你已被判定弃权', 'danger');
+      set({ gameStatus: 'settlement' });
+      get().stopSimulation();
+    } else if (payload.winnerId === state.userId) {
+      get().showToast('对手弃权，您获胜', 'success');
+      set({ gameStatus: 'settlement' });
+      get().stopSimulation();
+    }
+  },
+
+  _handleMatchDestroyed: (payload) => {
+    const msg = payload?.message ?? '房间已关闭';
+    get().showModal('room_destroyed', msg, '房间已销毁');
+    get().showToast(msg, 'warning');
+    get()._resetMatchToIdle();
+  },
+
+  _handleMatchTimeout: (payload) => {
+    if (get().matchId) return;
+    set((s) => ({
+      gameStatus: 'waiting',
+      waitingRoom: s.waitingRoom ?? {
+        code: null,
+        currentPlayers: 1,
+        requiredPlayers: s.onlinePlayerCount,
+        countdown: null,
+        mode: 'quick',
+      },
+    }));
+    get().showModal(
+      'solo_confirm',
+      payload?.message ?? '暂无对手，是否切换单人模式？',
+      '匹配超时',
+    );
+  },
+
+  _confirmSoloFallback: async () => {
+    set({ modal: null, waitingRoom: null });
+    const api = await import('../services/apiService');
+    await api.apiMatch.cancelWaiting(get().userId);
+    await get().startOfflinePractice('retail');
+  },
+
+  _handleRoomUpdate: (payload) => {
+    if (!payload) return;
+    set((s) => ({
+      gameStatus: 'waiting',
+      waitingRoom: {
+        code: payload.code ?? s.waitingRoom?.code ?? null,
+        currentPlayers: payload.currentPlayers,
+        requiredPlayers: payload.requiredPlayers,
+        countdown: s.waitingRoom?.countdown ?? null,
+        mode: payload.mode ?? s.waitingRoom?.mode ?? 'room',
+      },
+    }));
+  },
+
+  _handleRoomCountdown: (payload) => {
+    const seconds = payload?.seconds ?? 3;
+    set((s) => ({
+      gameStatus: 'waiting',
+      waitingRoom: s.waitingRoom
+        ? { ...s.waitingRoom, countdown: seconds, currentPlayers: s.waitingRoom.requiredPlayers }
+        : {
+            code: null,
+            currentPlayers: s.onlinePlayerCount,
+            requiredPlayers: s.onlinePlayerCount,
+            countdown: seconds,
+            mode: 'quick',
+          },
+    }));
+  },
+
+  _handleMatchStart: async (payload) => {
+    if (!payload?.matchId) return;
+    set({ gameStatus: 'matching', waitingRoom: null });
+    await get()._joinBackendMatch(payload.matchId, payload.role);
+  },
+
+  _attemptReconnectMatch: async () => {
+    const state = get();
+    if (!state.matchId || !state.backendMode) return;
+    try {
+      const ws = await import('../services/wsService');
+      await ws.waitForAuth(8000);
+      const ack = await ws.joinMatch(state.matchId);
+      if (ack?.ok) {
+        get().dismissModal();
+        get().showToast('已重新连接对局', 'success');
+      }
+    } catch (err) {
+      console.warn('[reconnect] join-match failed', err);
+    }
   },
 }));

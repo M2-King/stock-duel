@@ -19,8 +19,8 @@ export default function DailySettlementModal() {
     ? `☕ 11:30 中午收盘`
     : `🔔 第 ${settlement.day} 日 15:00 收盘`;
   const subtitle = isLunch
-    ? '上午盘结束，进入 90 分钟午休 — 1.5 分钟后自动重启下午盘'
-    : '今日交易结束 — 2 分钟后自动进入下一交易日';
+    ? '上午盘结束，进入午休 — 2 秒后自动重启下午盘'
+    : '今日交易结束 — 2 秒后自动进入下一交易日';
   const cta = isLunch ? '继续下午盘' : '进入下一日';
 
   return (

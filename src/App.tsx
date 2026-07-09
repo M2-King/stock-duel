@@ -19,7 +19,11 @@ import Tools from './pages/Tools';
 import Messages from './pages/Messages';
 import Rankings from './pages/Rankings';
 import Settings from './pages/Settings';
+import MobileApp from './mobile/MobileApp';
+import { useViewportWidth } from './mobile/hooks/useViewportWidth';
 import './App.css';
+
+const MOBILE_BREAKPOINT = 768;
 
 function PlayingBanner({ role, onBack }: { role: 'dealer' | 'retail' | 'regulator'; onBack: () => void }) {
   return (
@@ -71,8 +75,30 @@ function PlayingBanner({ role, onBack }: { role: 'dealer' | 'retail' | 'regulato
 function App() {
   const [section, setSection] = useState<NavSection>('overview');
   const [showSettlement, setShowSettlement] = useState(false);
+  const viewportW = useViewportWidth();
+  const isMobile = viewportW < MOBILE_BREAKPOINT;
 
-  const { role, gameStatus, endMatch, startSimulation, stopSimulation } = useGameStore();
+  const { role, gameStatus, endMatch, startSimulation, stopSimulation, backendMode, connectBackend } = useGameStore();
+
+  // Boot: try connecting to backend. Falls back to local simulation silently on failure.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        await connectBackend();
+      } catch {
+        /* ignored — backendMode stays false */
+      }
+      if (cancelled) return;
+      if (!useGameStore.getState().backendMode) {
+        // No toast here — connectBackend already surfaced a friendly message
+        console.info('[StockDuel] backend not available, using local simulation');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [connectBackend]);
 
   // Mirror App section <-> store (sidebar uses local state; pages use store.setSection)
   useEffect(() => {
@@ -89,12 +115,16 @@ function App() {
 
   // Tick engine lifecycle
   useEffect(() => {
+    console.log('[App] gameStatus effect fire; status=', gameStatus);
     if (gameStatus === 'playing') {
       startSimulation();
     } else {
       stopSimulation();
     }
-    return () => stopSimulation();
+    return () => {
+      console.log('[App] gameStatus effect cleanup; status=', gameStatus);
+      stopSimulation();
+    };
   }, [gameStatus, startSimulation, stopSimulation]);
   
   // 结算由 store.endTradingDay 在最后一个交易日 15:00 收盘时触发（isFinalDay →
@@ -114,7 +144,7 @@ function App() {
     setSection('overview');
   };
 
-  // "再来一局"：先整局重置（清空持仓、现金回到 1 亿），再进入匹配流程。
+  // "再来一局"：先整局重置（清空持仓、现金回到 1 亿），再进入匹配流程
   const handlePlayAgain = () => {
     setShowSettlement(false);
     const st = useGameStore.getState();
@@ -161,15 +191,14 @@ function App() {
   };
 
   const renderContent = () => {
-    // When playing: still allow sidebar navigation, but show a banner + the role panel as default tab
+    // When playing: render the section. Tools 页自身会根据 gameStatus === 'playing'
+    // 切到 DealerPanel/TradePanel/RegulatorPanel；这里不重复切换。
     if (gameStatus === 'playing') {
-      // Tools / Markets / News / Portfolio / Watchlist / Messages / Rankings / Settings → render selected page
-      // overview / regulator / (default) → render role panel
-      if (section === 'overview' || section === 'regulator' || section === 'tools') {
+      if (section === 'overview' || section === 'regulator') {
         return (
           <>
             <PlayingBanner role={role} onBack={handleBackToRolePanel} />
-            {section === 'tools' ? renderRolePanel() : renderPageBySection(section)}
+            {renderPageBySection(section)}
           </>
         );
       }
@@ -182,11 +211,20 @@ function App() {
     }
 
     // Idle / matching / reversed: render the selected section directly
-    if (section === 'regulator' || section === 'tools') {
-      return section === 'tools' ? <Tools /> : <RegulatorPanelPage />;
+    if (section === 'tools') {
+      return <Tools />;
+    }
+    if (section === 'regulator') {
+      return <RegulatorPanelPage />;
     }
     return renderPageBySection(section);
   };
+
+  // < 768px: 移动端。MobileApp 内部已经处理 toast / modals，
+  // 不在这里重复挂载（避免两份 toast / 重复弹窗）。
+  if (isMobile) {
+    return <MobileApp />;
+  }
 
   return (
     <div className="app">
@@ -206,6 +244,9 @@ function App() {
       {/* Global Toast */}
       <Toast />
 
+      {/* Match lifecycle modal (disconnect / forfeit / room destroyed) */}
+      <MatchAlertModal />
+
       {/* Match Flow Overlay (matching -> reversed) */}
       <MatchOverlay />
 
@@ -218,6 +259,130 @@ function App() {
         onClose={handleCloseSettlement}
         onPlayAgain={handlePlayAgain}
       />
+    </div>
+  );
+}
+
+function MatchAlertModal() {
+  const modal = useGameStore(s => s.modal);
+  const dismissModal = useGameStore(s => s.dismissModal);
+  const confirmSoloFallback = useGameStore(s => s._confirmSoloFallback);
+  if (!modal) return null;
+
+  const titleMap: Record<string, string> = {
+    disconnect: '连接中断',
+    forfeit: '弃权',
+    room_destroyed: '房间已销毁',
+    kicked: '监管处罚',
+  };
+
+  const isSoloConfirm = modal.type === 'solo_confirm';
+  const isKicked = modal.type === 'kicked';
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 600,
+        background: 'rgba(0,0,0,0.55)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+      onClick={isSoloConfirm || isKicked ? undefined : dismissModal}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: 'var(--bg-elevated)',
+          border: '1px solid var(--border-subtle)',
+          borderRadius: 12,
+          padding: '24px 28px',
+          maxWidth: 400,
+          boxShadow: '0 16px 48px rgba(0,0,0,0.5)',
+        }}
+      >
+        <h3 style={{ margin: '0 0 12px', fontSize: 18, color: 'var(--text-primary)' }}>
+          {modal.title ?? titleMap[modal.type] ?? '提示'}
+        </h3>
+        <p style={{ margin: '0 0 20px', fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+          {modal.message}
+        </p>
+        {isSoloConfirm ? (
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button
+              type="button"
+              onClick={() => { void confirmSoloFallback(); }}
+              style={{
+                flex: 1,
+                padding: '10px 16px',
+                background: 'var(--text-primary)',
+                color: 'var(--bg-base)',
+                border: 'none',
+                borderRadius: 6,
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              切换单人模式
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                dismissModal();
+                void useGameStore.getState().startOnlineQuickMatch();
+              }}
+              style={{
+                flex: 1,
+                padding: '10px 16px',
+                background: 'transparent',
+                color: 'var(--text-secondary)',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: 6,
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              继续等待
+            </button>
+          </div>
+        ) : isKicked ? (
+          <button
+            type="button"
+            onClick={() => { dismissModal(); useGameStore.getState().setGameStatus('settlement'); }}
+            style={{
+              width: '100%',
+              padding: '10px 16px',
+              background: 'var(--color-danger)',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 6,
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            确认
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={dismissModal}
+            style={{
+              width: '100%',
+              padding: '10px 16px',
+              background: 'var(--text-primary)',
+              color: 'var(--bg-base)',
+              border: 'none',
+              borderRadius: 6,
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            知道了
+          </button>
+        )}
+      </div>
     </div>
   );
 }

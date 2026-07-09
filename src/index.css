@@ -26,6 +26,7 @@
 
   /* Brand Accent (white minimalist) */
   --accent: #ffffff;
+  --accent-blue: #2563eb;
   --accent-soft: rgba(255, 255, 255, 0.08);
   --accent-medium: rgba(255, 255, 255, 0.16);
 
