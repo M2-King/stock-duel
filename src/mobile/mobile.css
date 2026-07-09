@@ -769,8 +769,6 @@
 .m-tool-use:disabled { cursor: not-allowed; }
 
 /* ============================================================
-   Responsive — make sure nothing leaks outside 768px on desktop
+   Responsive — desktop 尺寸下整个 mobile-shell 已由 .app-shell 隐藏，
+   这里不再额外加 display:none，避免与 .app-shell 的 !important 冲突。
    ============================================================ */
-@media (min-width: 769px) {
-  .m-app { display: none !important; }
-}

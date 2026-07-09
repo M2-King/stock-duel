@@ -1,14 +1,3 @@
-.app {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  min-width: 0;
-  background: var(--bg-base);
-  overflow: hidden;
-  isolation: isolate;
-  position: relative;
-}
-
 .app-main {
   flex: 1;
   min-height: 0;
@@ -97,4 +86,63 @@
     max-height: calc(100vh - var(--header-height) - 36px);
     overflow-y: auto;
   }
+}
+
+/* ============================================================
+   Desktop / Mobile shell switching
+   CSS-only fallback: 即使 useIsMobile() 初始化错误，
+   用 media query 也能保证移动端尺寸下不显示桌面布局。
+   ============================================================ */
+.app-shell {
+  position: relative;
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: var(--bg-base);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+/* 默认：两者都隐藏，由 inline data-mobile 决定显示哪个 */
+.desktop-shell,
+.mobile-shell {
+  display: none;
+}
+
+/* 大屏：桌面壳显示 */
+.app-shell[data-mobile="0"] .desktop-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+}
+.app-shell[data-mobile="0"] .mobile-shell  { display: none; }
+
+/* 小屏：移动壳显示 */
+.app-shell[data-mobile="1"] .desktop-shell { display: none !important; }
+.app-shell[data-mobile="1"] .mobile-shell  { display: block !important; }
+
+/* 小屏下 mobile-shell 也得撑满（因为它是块级容器） */
+.app-shell[data-mobile="1"] .mobile-shell {
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* CSS-only 兜底：直接用 viewport 宽度，覆盖 React 端的数据
+   （只有当 React mount 后 .app-shell 的 data-mobile 才被设上，
+    这个 media query 就是「JS 还没 hydrate」那一帧的救命稻草） */
+@media (max-width: 767px) {
+  .app-shell .desktop-shell { display: none !important; }
+  .app-shell .mobile-shell  { display: block !important; }
+}
+
+@media (min-width: 768px) {
+  .app-shell .desktop-shell {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+  }
+  .app-shell .mobile-shell  { display: none; }
 }

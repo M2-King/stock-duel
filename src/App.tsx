@@ -20,7 +20,7 @@ import Messages from './pages/Messages';
 import Rankings from './pages/Rankings';
 import Settings from './pages/Settings';
 import MobileApp from './mobile/MobileApp';
-import { useViewportWidth } from './mobile/hooks/useViewportWidth';
+import { useIsMobile, useViewportWidth } from './mobile/hooks/useViewportWidth';
 import './App.css';
 
 const MOBILE_BREAKPOINT = 768;
@@ -75,8 +75,23 @@ function PlayingBanner({ role, onBack }: { role: 'dealer' | 'retail' | 'regulato
 function App() {
   const [section, setSection] = useState<NavSection>('overview');
   const [showSettlement, setShowSettlement] = useState(false);
+  const isMobile = useIsMobile(MOBILE_BREAKPOINT);
   const viewportW = useViewportWidth();
-  const isMobile = viewportW < MOBILE_BREAKPOINT;
+
+  // 注入 viewport meta，确保手机有正确 viewport；保留 Netlify 注入的（如有）
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    let vp = document.querySelector('meta[name="viewport"]');
+    if (!vp) {
+      vp = document.createElement('meta');
+      vp.setAttribute('name', 'viewport');
+      document.head.appendChild(vp);
+    }
+    vp.setAttribute(
+      'content',
+      'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover',
+    );
+  }, []);
 
   const { role, gameStatus, endMatch, startSimulation, stopSimulation, backendMode, connectBackend } = useGameStore();
 
@@ -220,45 +235,50 @@ function App() {
     return renderPageBySection(section);
   };
 
-  // < 768px: 移动端。MobileApp 内部已经处理 toast / modals，
-  // 不在这里重复挂载（避免两份 toast / 重复弹窗）。
-  if (isMobile) {
-    return <MobileApp />;
-  }
-
+  // 双壳挂载 (CSS-level switching)：两个 shell 都被挂在 DOM，
+  // 但通过 data-mobile + media query 决定哪个可见。这样
+  // resize / 横竖屏切换时不需要重新挂载 React 子树，无闪烁；
+  // 同时即便 useIsMobile 初始化有误（如 SSR 时返回 1024），
+  // CSS media query 也会保证小屏下展示的是 .mobile-shell。
+  //
+  // 每个 shell 内部 if (!isMounted) return null; —— 不激活的
+  // shell 完全不渲染任何子节点，避免重复 toast / 多份 WebSocket。
   return (
-    <div className="app">
-      <Sidebar
-        activeSection={section}
-        onSectionChange={setSection}
-      />
-      <Header />
-      <main className="app-main">
-        <GameInfoSidebar />
-        <div className="content-area" key={`${section}-${role}`}>
-          {renderContent()}
-        </div>
-      </main>
-      <StatusBar />
+    <div className="app-shell" data-mobile={isMobile ? '1' : '0'} data-vw={viewportW}>
+      {/* 桌面壳 */}
+      <div className="desktop-shell" aria-hidden={isMobile}>
+        {!isMobile && (
+          <>
+            <Sidebar
+              activeSection={section}
+              onSectionChange={setSection}
+            />
+            <Header />
+            <main className="app-main">
+              <GameInfoSidebar />
+              <div className="content-area" key={`${section}-${role}`}>
+                {renderContent()}
+              </div>
+            </main>
+            <StatusBar />
 
-      {/* Global Toast */}
-      <Toast />
+            <Toast />
+            <MatchAlertModal />
+            <MatchOverlay />
+            <DailySettlementModal />
+            <SettlementModal
+              open={showSettlement}
+              onClose={handleCloseSettlement}
+              onPlayAgain={handlePlayAgain}
+            />
+          </>
+        )}
+      </div>
 
-      {/* Match lifecycle modal (disconnect / forfeit / room destroyed) */}
-      <MatchAlertModal />
-
-      {/* Match Flow Overlay (matching -> reversed) */}
-      <MatchOverlay />
-
-      {/* Daily Settlement Modal (lunch / day close) */}
-      <DailySettlementModal />
-
-      {/* Settlement Modal */}
-      <SettlementModal
-        open={showSettlement}
-        onClose={handleCloseSettlement}
-        onPlayAgain={handlePlayAgain}
-      />
+      {/* 移动壳 */}
+      <div className="mobile-shell" aria-hidden={!isMobile}>
+        {isMobile && <MobileApp />}
+      </div>
     </div>
   );
 }
