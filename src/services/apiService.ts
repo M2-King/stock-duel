@@ -47,16 +47,25 @@ async function http<T>(
 }
 
 /**
- * 探测后端是否可达。返回 true 表示能拿到任意 2xx/3xx/4xx (只要服务器活着)。
- * 注意：不要在这里 throw，因为我们要支持"后端没起也能跑本地模拟"。
+ * 探测后端是否可达。
+ * Nginx 反代场景下 /health 常被 SPA fallback 成 index.html（仍 200），
+ * 因此优先探测 /api/auth/guest 并校验 JSON { code }。
  */
 export async function pingBackend(): Promise<boolean> {
-  try {
-    const res = await fetch(`${BASE_URL}/health`, { method: 'GET' });
-    return res.status < 500;
-  } catch {
-    return false;
+  const probes = [`${BASE_URL}/api/auth/guest`, `${BASE_URL}/health`];
+  for (const url of probes) {
+    try {
+      const res = await fetch(url, { method: 'GET' });
+      if (!res.ok || res.status >= 500) continue;
+      const ct = res.headers.get('content-type') ?? '';
+      if (!ct.includes('application/json')) continue;
+      const json = (await res.json()) as { code?: number };
+      if (typeof json?.code === 'number') return true;
+    } catch {
+      /* try next probe */
+    }
   }
+  return false;
 }
 
 // ============================================================

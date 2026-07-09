@@ -50,10 +50,9 @@
  */
 
 import { io, Socket } from 'socket.io-client';
-import { EFFECTIVE_API_BASE } from '../config';
+import { EFFECTIVE_WS_URL } from '../config';
 
-const BASE_URL = EFFECTIVE_API_BASE;
-const NS = '/game';
+const WS_URL = EFFECTIVE_WS_URL;
 
 export type WsStatus = 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error';
 
@@ -97,7 +96,7 @@ export function onWsStatus(fn: (s: WsStatus) => void): () => void {
 export function connect(): Socket {
   if (socket && socket.connected) return socket;
   if (!socket) {
-    socket = io(`${BASE_URL}${NS}`, {
+    socket = io(WS_URL, {
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionDelay: 800,
@@ -295,4 +294,4 @@ export function sendRegulatorAction(payload: { matchId: string; alertId: string;
   getSocket().emit('regulator:action', payload);
 }
 
-export const WS_BASE = `${BASE_URL}${NS}`;
+export const WS_BASE = WS_URL;
