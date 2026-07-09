@@ -16,9 +16,10 @@ import MobileRolePill from '../components/RolePill';
 
 interface Props {
   onTabChange: (tab: MobileTab) => void;
+  onOpenMatch: () => void;
 }
 
-export default function MobileHome({ onTabChange }: Props) {
+export default function MobileHome({ onTabChange, onOpenMatch }: Props) {
   const role = useGameStore((s) => s.role);
   const userName = useGameStore((s) => s.userName);
   const gameStatus = useGameStore((s) => s.gameStatus);
@@ -162,7 +163,7 @@ export default function MobileHome({ onTabChange }: Props) {
         {role === 'dealer' && gameStatus === 'playing' ? (
           <ActionItem icon="🛠️" label="操盘" onTap={() => onTabChange('trade')} />
         ) : (
-          <ActionItem icon="🆚" label="匹配" onTap={() => useGameStore.getState().startMatch()} />
+          <ActionItem icon="🆚" label="匹配" onTap={onOpenMatch} />
         )}
       </div>
 

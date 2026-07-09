@@ -13,11 +13,13 @@ import MobileTrade from './pages/Trade';
 import MobilePortfolio from './pages/Portfolio';
 import MobileProfile from './pages/Profile';
 import MobileBottomNav, { MobileTab } from './components/BottomNav';
-import MobileMatchOverlay from './components/MatchOverlay';
+import MobileMatchModeSheet from './components/MatchModeSheet';
+import MatchOverlay from '../components/MatchOverlay';
 import MobileDailySettlementModal from './components/DailySettlementModal';
 import MobileSettlementModal from './components/SettlementModal';
 import { useViewportWidth } from './hooks/useViewportWidth';
 import { ThemeProvider } from './hooks/useTheme';
+import '../components/MatchOverlay.css';
 import './mobile.css';
 
 export default function MobileApp() {
@@ -26,8 +28,8 @@ export default function MobileApp() {
   const gameStatus = useGameStore((s) => s.gameStatus);
   const endMatch = useGameStore((s) => s.endMatch);
   const restartMatch = useGameStore((s) => s.restartMatch);
-  const startMatch = useGameStore((s) => s.startMatch);
   const [showFinal, setShowFinal] = useState(false);
+  const [matchSheetOpen, setMatchSheetOpen] = useState(false);
   const toast = useGameStore((s) => s.toast);
 
   // 切到 settlement 时弹最终结算
@@ -56,12 +58,17 @@ export default function MobileApp() {
         setTab(t);
       }
     };
+    const onOpenMatch = () => setMatchSheetOpen(true);
     document.addEventListener('m-goto-tab', onGoto);
-    return () => document.removeEventListener('m-goto-tab', onGoto);
+    document.addEventListener('m-open-match', onOpenMatch);
+    return () => {
+      document.removeEventListener('m-goto-tab', onGoto);
+      document.removeEventListener('m-open-match', onOpenMatch);
+    };
   }, []);
 
   let page: React.ReactNode = null;
-  if (tab === 'home') page = <MobileHome onTabChange={setTab} />;
+  if (tab === 'home') page = <MobileHome onTabChange={setTab} onOpenMatch={() => setMatchSheetOpen(true)} />;
   else if (tab === 'markets') page = <MobileMarkets />;
   else if (tab === 'trade') page = <MobileTrade />;
   else if (tab === 'portfolio') page = <MobilePortfolio />;
@@ -81,8 +88,10 @@ export default function MobileApp() {
         </div>
       )}
 
-      {/* 匹配流程遮罩（matching / reversed） */}
-      <MobileMatchOverlay />
+      <MobileMatchModeSheet open={matchSheetOpen} onClose={() => setMatchSheetOpen(false)} />
+
+      {/* 匹配流程：等待 / 翻牌（与桌面端共用 MatchOverlay） */}
+      <MatchOverlay />
 
       {/* 午盘/收盘结算 */}
       <MobileDailySettlementModal />
@@ -95,8 +104,8 @@ export default function MobileApp() {
           onPlayAgain={() => {
             setShowFinal(false);
             restartMatch();
-            startMatch();
             setTab('home');
+            setMatchSheetOpen(true);
           }}
         />
       )}

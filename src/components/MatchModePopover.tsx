@@ -22,7 +22,8 @@ interface MatchModePopoverProps {
   onClose: () => void;
 }
 
-export default function MatchModePopover({ onClose }: MatchModePopoverProps) {
+/** 匹配模式选择流程（桌面 popover / 移动 sheet 共用） */
+export function MatchModeFlow({ onClose }: MatchModePopoverProps) {
   const {
     backendMode,
     startOnlineQuickMatch, startOfflinePractice,
@@ -139,7 +140,7 @@ export default function MatchModePopover({ onClose }: MatchModePopoverProps) {
   };
 
   return (
-    <div className="match-mode-popover" onClick={(e) => e.stopPropagation()}>
+    <>
       <div className="match-popover-header">
         <button type="button" className="match-popover-back" onClick={goBack}>
           ←
@@ -329,6 +330,14 @@ export default function MatchModePopover({ onClose }: MatchModePopoverProps) {
           )}
         </>
       )}
+    </>
+  );
+}
+
+export default function MatchModePopover({ onClose }: MatchModePopoverProps) {
+  return (
+    <div className="match-mode-popover" onClick={(e) => e.stopPropagation()}>
+      <MatchModeFlow onClose={onClose} />
     </div>
   );
 }

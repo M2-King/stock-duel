@@ -973,3 +973,68 @@
   box-shadow: 0 2px 4px rgba(0,0,0,0.25);
 }
 .m-switch.on .knob { left: 20px; background: var(--m-accent-text); }
+
+/* ── 匹配模式底部弹层（复用桌面 MatchModePopover 样式） ── */
+.m-match-sheet-shade {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  animation: m-fade-in 0.2s ease-out;
+}
+
+.match-mode-popover--sheet {
+  position: relative;
+  top: auto;
+  left: auto;
+  width: 100%;
+  max-width: 480px;
+  max-height: 85vh;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.45);
+  animation: m-sheet-up 0.25s cubic-bezier(0.34, 1.2, 0.64, 1);
+  padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom, 0px));
+}
+
+@keyframes m-sheet-up {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+@keyframes m-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* 桌面 MatchOverlay 在移动端的适配 */
+.m-app .match-overlay {
+  z-index: calc(var(--z-modal) + 2);
+  padding: 16px;
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+}
+
+.m-app .match-modal,
+.m-app .waiting-modal {
+  min-width: 0;
+  width: min(100%, 420px);
+  padding: var(--space-6);
+}
+
+.m-app .reversal-cards {
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+}
+
+.m-app .reversal-card {
+  width: 100px;
+  height: 140px;
+}
+
+.m-app .identity-confirm-row {
+  flex-wrap: wrap;
+  justify-content: center;
+}

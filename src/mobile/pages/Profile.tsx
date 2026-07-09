@@ -24,7 +24,6 @@ export default function MobileProfile() {
   const updateSettings = useGameStore((s) => s.updateSettings);
   const settings = useGameStore((s) => s.settings);
   const restartMatch = useGameStore((s) => s.restartMatch);
-  const startMatch = useGameStore((s) => s.startMatch);
   const endMatch = useGameStore((s) => s.endMatch);
   const showToast = useGameStore((s) => s.showToast);
   const leaderboard = useGameStore((s) => s.leaderboard);
@@ -183,8 +182,7 @@ export default function MobileProfile() {
             type="button"
             className="m-btn m-btn-primary m-btn-block"
             onClick={() => {
-              startMatch();
-              showToast('开始匹配...', 'info');
+              document.dispatchEvent(new CustomEvent('m-open-match'));
             }}
           >开始匹配</button>
         ) : (
