@@ -118,9 +118,9 @@ export default function MobileTrade() {
             <span className="value m-mono">
               <span className={currentQuote.change >= 0 ? 'm-up' : 'm-down'}>{currentQuote.price.toFixed(2)}</span>
               <span style={{ color: 'var(--m-text-3)', margin: '0 6px' }}>·</span>
-              <span style={{ color: 'rgba(220,38,38,0.8)' }}>↑{upper.toFixed(2)}</span>
+              <span style={{ color: 'var(--m-up)' }}>↑{upper.toFixed(2)}</span>
               <span style={{ color: 'var(--m-text-3)', margin: '0 6px' }}>/</span>
-              <span style={{ color: 'rgba(22,163,74,0.8)' }}>↓{lower.toFixed(2)}</span>
+              <span style={{ color: 'var(--m-down)' }}>↓{lower.toFixed(2)}</span>
             </span>
           </div>
         </section>
@@ -183,9 +183,9 @@ export default function MobileTrade() {
         <div className="m-card-row">
           <span className="label">涨跌停</span>
           <span className="value m-mono">
-            <span style={{ color: 'rgba(220,38,38,0.85)' }}>↑¥{upper.toFixed(2)}</span>
+            <span style={{ color: 'var(--m-up)' }}>↑¥{upper.toFixed(2)}</span>
             <span style={{ color: 'var(--m-text-3)', margin: '0 4px' }}>/</span>
-            <span style={{ color: 'rgba(22,163,74,0.85)' }}>↓¥{lower.toFixed(2)}</span>
+            <span style={{ color: 'var(--m-down)' }}>↓¥{lower.toFixed(2)}</span>
             {isUpper && <span className="m-tag m-tag-up" style={{ marginLeft: 8 }}>涨停</span>}
             {isLower && <span className="m-tag m-tag-down" style={{ marginLeft: 8 }}>跌停</span>}
           </span>

@@ -26,13 +26,13 @@ export default function MatchModePopover({ onClose }: MatchModePopoverProps) {
   const {
     backendMode,
     startOnlineQuickMatch, startOfflinePractice,
-    createOnlineRoom, joinOnlineRoom, showToast,
+    createOnlineRoom, joinOnlineRoom,
     onlinePlayerCount,
   } = useGameStore();
 
   const [step, setStep] = useState<PopoverStep>('mode');
   const [onlineTab, setOnlineTab] = useState<OnlineTab>('quick');
-  const [roomCode, setRoomCode] = useState<string | null>(null);
+  const [, setRoomCode] = useState<string | null>(null);
   const [joinCode, setJoinCode] = useState('');
   const [rooms, setRooms] = useState<LobbyRoom[]>([]);
   const [loading, setLoading] = useState(false);

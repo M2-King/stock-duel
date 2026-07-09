@@ -144,7 +144,6 @@ export default function MobileMarkets() {
           const lower = (stock.price - stock.change) * 0.90;
           const isLimitUp = price >= upper - 0.001;
           const isLimitDown = price <= lower + 0.001;
-          const inWatch = watchlist.includes(stock.symbol);
           return (
             <div
               key={stock.symbol}

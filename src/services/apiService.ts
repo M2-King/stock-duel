@@ -4,8 +4,8 @@
  *  - 后端可达：用 fetch 把响应解析成 { code, data, message } 并返回
  *  - 后端不可达 / 网络错误：返回 Fail('网络错误'|'后端未启用') 由调用方决定降级
  *
- *  baseURL 取自 src/config.ts → EFFECTIVE_API_BASE，自动按 hostname 切换
- *  localhost ↔ 49.235.107.48。环境变量 VITE_BACKEND_URL 可强制覆盖。
+ *  baseURL 取自 src/config.ts → EFFECTIVE_API_BASE
+ *  localhost → :3000；服务器 → 同源 Nginx 反代。VITE_BACKEND_URL 可覆盖。
  */
 
 import { EFFECTIVE_API_BASE } from '../config';
@@ -18,11 +18,6 @@ export interface ApiResponse<T = any> {
   message: string;
 }
 
-const Ok = <T = any>(data: T, message = 'ok'): ApiResponse<T> => ({
-  code: 0,
-  data,
-  message,
-});
 const Fail = (message: string, code = 1, data: any = null): ApiResponse => ({
   code,
   data,

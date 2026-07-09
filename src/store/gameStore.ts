@@ -198,6 +198,7 @@ export interface OrderRecord {
   quantity: number;
   status: 'filled' | 'pending' | 'cancelled';
   timestamp: number;
+  leverage?: number;
 }
 
 interface ReversalCard {
@@ -250,6 +251,7 @@ interface SimulationState {
   _lastHoldingsUpdate?: number;
   /** Set true by startSimulation; guards session-close until the tick engine is armed. */
   _sessionInitialized?: boolean;
+  _tickLogCount?: number;
 }
 
 interface GameState {
@@ -391,7 +393,7 @@ interface GameState {
     quotes?: Record<string, any>;
     orderBooks?: Record<string, any>;
   }) => void;
-  _applyServerSnapshot: (snap: { matchId: string; role: string; symbol: string; quote: any; klines: any[]; orderBook: any; indicators: any; currentDay?: number; currentTick?: number; session?: string }) => void;
+  _applyServerSnapshot: (snap: { matchId: string; role: string; symbol: string; quote: any; klines: any[]; orderBook: any; indicators: any; timeline?: any[]; currentDay?: number; currentTick?: number; session?: string }) => void;
   _applyServerNews: (news: any) => void;
   _applyServerBlackSwan: (payload: { symbol: string; newPrice: number; label: string; multiplier: number }) => void;
   _applyServerMarketUpdate: (payload: { symbol: string; quote: any; klines: any[]; orderBook: any; indicators: any; timeline: any[] }) => void;
@@ -399,7 +401,7 @@ interface GameState {
   _applyDealerResult: (payload: { code: number; data: any; message: string }) => void;
   _applyRegulatorFreeze: (payload: { symbol: string; maxSingle: number; maxDaily: number; expiresTick: number; durationTicks?: number; freezeTicks?: number; restrictionType?: 'warn' | 'freeze' }) => void;
   _applyRegulatorKick: (payload: { penalizedUserId: string; opponentId?: string; fine: number; symbol?: string }) => void;
-  _applyRegulatorResult: (payload: { code: number; data?: any; message?: string }) => void;
+  _applyRegulatorResult: (payload: { code: number; data?: any; message?: string; _alertId?: string }) => void;
   _applyMatchTick: (payload: { currentTick: number }) => void;
   _applyMatchEnd: (payload: { matchId: string; winnerId?: string }) => void;
   _handleMatchTimeout: (payload: { message?: string }) => void;
@@ -654,58 +656,8 @@ const initialSettings: UserSettings = {
 };
 
 // ============================================================
-// Per-symbol timeline/K线 helpers
-// 每只股票独立的 timeline + K线，切换股票时图表无缝切换。
+// Per-symbol timeline/K线 helpers — inlined in selectSymbol / server handlers.
 // ============================================================
-const TIMELINE_MAX = 500;
-const KLINES_MAX = 300;
-
-/** 把一个价格点 push 到对应 symbol 的 timeline。如果当前 currentQuote 是这个 symbol，同时同步 timelineData。 */
-function pushTimelinePoint(
-  set: (partial: Partial<GameState> | ((s: GameState) => Partial<GameState>)) => void,
-  state: GameState,
-  symbol: string,
-  price: number,
-  maxPoints = TIMELINE_MAX,
-) {
-  const cur = state.timelineBySymbol[symbol] ?? [];
-  const next = [...cur, price].slice(-maxPoints);
-  const newMap = { ...state.timelineBySymbol, [symbol]: next };
-  // 同步 timelineData：仅当 symbol 是当前主标的时
-  const partial: any = { timelineBySymbol: newMap };
-  if (symbol === state.currentQuote.symbol) {
-    partial.timelineData = next;
-  }
-  set(partial);
-}
-
-/** 把一个 K 线 push 到对应 symbol 的 klinesBySymbol；同时同步 klines（如适用）。 */
-function pushKlineBySymbol(
-  set: (partial: Partial<GameState> | ((s: GameState) => Partial<GameState>)) => void,
-  state: GameState,
-  symbol: string,
-  kline: KLine,
-) {
-  const cur = state.klinesBySymbol[symbol] ?? [];
-  const next = [...cur, kline].slice(-KLINES_MAX);
-  const newMap = { ...state.klinesBySymbol, [symbol]: next };
-  const partial: any = { klinesBySymbol: newMap };
-  if (symbol === state.currentQuote.symbol) {
-    partial.klines = next;
-  }
-  set(partial);
-}
-
-/** 切换股票时，把目标 symbol 的 timeline/klines 同步到顶层字段，供图表读取。 */
-function syncCurrentSymbolData(
-  set: (partial: Partial<GameState> | ((s: GameState) => Partial<GameState>)) => void,
-  state: GameState,
-  symbol: string,
-) {
-  const tl = state.timelineBySymbol[symbol] ?? [];
-  const kl = state.klinesBySymbol[symbol] ?? state.klines ?? [];
-  set({ timelineData: tl, klines: kl });
-}
 
 export const useGameStore = create<GameState>((set, get) => ({
   // User

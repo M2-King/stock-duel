@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import { get } from '../../services/apiService';
+import { useTheme } from '../hooks/useTheme';
 
 type ToolType = 'pump' | 'press' | 'accumulate' | 'distribute' | 'wash' | 'fake';
 
@@ -38,7 +39,8 @@ export default function MobileDealerTools({ symbol }: Props) {
   const currentQuote = useGameStore((s) => s.currentQuote);
   const dealerResources = useGameStore((s) => s.dealerResources);
   const executeDealerAction = useGameStore((s) => s.executeDealerAction);
-  const showToast = useGameStore((s) => s.showToast);
+
+  const { theme } = useTheme();
 
   const cash = dealerResources?.cash ?? 0;
   const risk = dealerResources?.riskIndex ?? 0;
@@ -55,7 +57,9 @@ export default function MobileDealerTools({ symbol }: Props) {
   const [costMap, setCostMap] = useState<Record<ToolType, number>>({
     pump: 0, press: 0, accumulate: 0, distribute: 0, wash: 0, fake: 0,
   });
-  const [loading, setLoading] = useState<Record<ToolType, boolean>>({});
+  const [loading, setLoading] = useState<Record<ToolType, boolean>>({
+    pump: false, press: false, accumulate: false, distribute: false, wash: false, fake: false,
+  });
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; msg: string } | null>(null);
 
   // 取 cost
@@ -193,8 +197,8 @@ export default function MobileDealerTools({ symbol }: Props) {
                 disabled={disabled}
                 style={{
                   marginTop: 8,
-                  background: disabled ? 'rgba(255,255,255,0.06)' : t.accent,
-                  color: disabled ? 'var(--m-text-3)' : '#0a0a0a',
+                  background: disabled ? 'var(--m-surface-2)' : t.accent,
+                  color: disabled ? 'var(--m-text-3)' : (theme === 'light' ? '#fff' : '#0a0a0a'),
                 }}
               >
                 {blockedByLimit ? (t.id === 'pump' ? '已涨停' : '已跌停') : tooExpensive ? '资金不足' : 'Use'}
@@ -209,11 +213,20 @@ export default function MobileDealerTools({ symbol }: Props) {
           className="m-toast"
           style={{
             top: 14, left: 16, right: 16,
-            background: feedback.kind === 'success' ? 'rgba(34,197,94,0.18)' : 'rgba(239,68,68,0.18)',
-            borderColor: feedback.kind === 'success' ? 'rgba(34,197,94,0.4)' : 'rgba(239,68,68,0.4)',
+            background: feedback.kind === 'success'
+              ? (theme === 'light' ? 'rgba(5,150,105,0.14)' : 'rgba(34,197,94,0.18)')
+              : (theme === 'light' ? 'rgba(225,29,72,0.14)' : 'rgba(239,68,68,0.18)'),
+            borderColor: feedback.kind === 'success'
+              ? (theme === 'light' ? 'rgba(5,150,105,0.32)' : 'rgba(34,197,94,0.4)')
+              : (theme === 'light' ? 'rgba(225,29,72,0.32)' : 'rgba(239,68,68,0.4)'),
           }}
         >
-          <span className="m-toast-dot" style={{ background: feedback.kind === 'success' ? '#22c55e' : '#ef4444' }} />
+          <span
+            className="m-toast-dot"
+            style={{
+              background: feedback.kind === 'success' ? 'var(--m-success)' : 'var(--m-danger)',
+            }}
+          />
           {feedback.msg}
         </div>
       )}

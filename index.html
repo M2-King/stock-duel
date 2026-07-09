@@ -8,6 +8,21 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&family=Noto+Sans+SC:wght@100..900&display=swap" rel="stylesheet">
+    <script>
+      // 防止主题闪烁：页面解析时立即同步 data-theme
+      (function () {
+        try {
+          var t = localStorage.getItem('stock-duel-mobile-theme');
+          if (t !== 'dark' && t !== 'light') {
+            t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches)
+              ? 'light' : 'dark';
+          }
+          document.documentElement.setAttribute('data-theme', t);
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

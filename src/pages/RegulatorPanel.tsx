@@ -32,7 +32,6 @@ export default function RegulatorPanelPage() {
     klinesBySymbol,
     applyRegulatoryAction,
     justiceScore,
-    currentTick,
   } = useGameStore();
   const [filter, setFilter] = useState<'all' | 'high' | 'medium' | 'low'>('all');
   const [detectedSignals, setDetectedSignals] = useState<DetectedSignal[]>([]);

@@ -1,30 +1,41 @@
 /**
  * 全局前后端地址配置。
- * 本地开发 → localhost
- * 部署到服务器 / 局域网 → 49.235.107.48:3000
  *
- * 通过比对 window.location.hostname 自动选择。
- * （如果 host 是别的子域 / IP，可在此扩展。）
+ * 本地开发 (localhost:5173) → 直连 NestJS localhost:3000
+ * 服务器部署 (Nginx 反代 /api、/game) → 同源 window.location.origin
+ *
+ * VITE_BACKEND_URL 可强制覆盖（.env / .env.local）。
  */
 
-export const API_BASE: string =
-  typeof window !== 'undefined' && window.location.hostname === 'localhost'
-    ? 'http://localhost:3000'
-    : 'http://49.235.107.48:3000';
+function isLocalHostname(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1';
+}
 
-export const WS_URL: string =
-  typeof window !== 'undefined' && window.location.hostname === 'localhost'
-    ? 'ws://localhost:3000/game'
-    : 'ws://49.235.107.48:3000/game';
+function resolveBases(): { api: string; ws: string } {
+  if (typeof window === 'undefined') {
+    return { api: '', ws: '' };
+  }
+  if (isLocalHostname(window.location.hostname)) {
+    return {
+      api: 'http://localhost:3000',
+      ws: 'http://localhost:3000/game',
+    };
+  }
+  const origin = window.location.origin;
+  return {
+    api: origin,
+    ws: `${origin}/game`,
+  };
+}
 
-/**
- * Vite 注入的覆盖：开发环境 .env / .env.local 可显式指定
- *   VITE_BACKEND_URL=http://192.168.1.5:3000
- * 一旦设置了，强制使用它（不走 hostname 自动判断）。
- */
+const { api, ws } = resolveBases();
+
+export const API_BASE = api;
+export const WS_URL = ws;
+
 const envOverride: string | undefined = (import.meta as any).env?.VITE_BACKEND_URL;
 
 export const EFFECTIVE_API_BASE = envOverride ?? API_BASE;
 export const EFFECTIVE_WS_URL = envOverride
-  ? envOverride.replace(/^http/, 'ws') + '/game'
+  ? envOverride.replace(/^http/, 'ws').replace(/^https/, 'wss') + '/game'
   : WS_URL;

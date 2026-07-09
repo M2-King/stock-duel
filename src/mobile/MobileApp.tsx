@@ -17,6 +17,7 @@ import MobileMatchOverlay from './components/MatchOverlay';
 import MobileDailySettlementModal from './components/DailySettlementModal';
 import MobileSettlementModal from './components/SettlementModal';
 import { useViewportWidth } from './hooks/useViewportWidth';
+import { ThemeProvider } from './hooks/useTheme';
 import './mobile.css';
 
 export default function MobileApp() {
@@ -67,7 +68,8 @@ export default function MobileApp() {
   else if (tab === 'profile') page = <MobileProfile />;
 
   return (
-    <div className="m-app" data-vw={w}>
+    <ThemeProvider>
+      <div className="m-app" data-vw={w}>
       <div className="m-page">{page}</div>
       <MobileBottomNav tab={tab} onTabChange={setTab} />
 
@@ -98,6 +100,7 @@ export default function MobileApp() {
           }}
         />
       )}
-    </div>
+      </div>
+    </ThemeProvider>
   );
 }

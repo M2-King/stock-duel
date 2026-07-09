@@ -81,17 +81,6 @@ export default function TradePanel() {
 
   const isWatched = watchlist.includes(currentQuote.symbol);
 
-  const setSharePct = (pct: number) => {
-    if (side === 'buy') {
-      const maxAffordable = Math.floor(playerCash / orderPrice);
-      setQuantity(Math.floor(maxAffordable * pct));
-    } else {
-      const holding = holdings.find(h => h.symbol === currentQuote.symbol);
-      const have = holding?.shares ?? 0;
-      setQuantity(Math.floor(have * pct));
-    }
-  };
-
   return (
     <div className="trade-panel">
       {/* Quick symbol switcher: watchlist chips + full stock dropdown */}

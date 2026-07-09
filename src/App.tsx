@@ -8,8 +8,6 @@ import MatchOverlay from './components/MatchOverlay';
 import SettlementModal from './components/SettlementModal';
 import DailySettlementModal from './components/DailySettlementModal';
 import Dashboard from './pages/Dashboard';
-import TradePanel from './pages/TradePanel';
-import DealerPanelPage from './pages/DealerPanel';
 import RegulatorPanelPage from './pages/RegulatorPanel';
 import Markets from './pages/Markets';
 import Portfolio from './pages/Portfolio';
@@ -93,7 +91,7 @@ function App() {
     );
   }, []);
 
-  const { role, gameStatus, endMatch, startSimulation, stopSimulation, backendMode, connectBackend } = useGameStore();
+  const { role, gameStatus, endMatch, startSimulation, stopSimulation, connectBackend } = useGameStore();
 
   // Boot: try connecting to backend. Falls back to local simulation silently on failure.
   useEffect(() => {
@@ -193,12 +191,6 @@ function App() {
       default:
         return <Dashboard />;
     }
-  };
-
-  const renderRolePanel = () => {
-    if (role === 'dealer') return <DealerPanelPage />;
-    if (role === 'regulator') return <RegulatorPanelPage />;
-    return <TradePanel />;
   };
 
   const handleBackToRolePanel = () => {

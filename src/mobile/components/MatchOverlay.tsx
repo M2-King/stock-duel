@@ -120,8 +120,8 @@ export default function MobileMatchOverlay() {
                   style={{
                     padding: '14px 16px',
                     textAlign: 'left',
-                    border: isMy ? '1px solid rgba(34,197,94,0.6)' : '1px solid var(--m-border)',
-                    background: isMy ? 'rgba(34,197,94,0.08)' : 'var(--m-surface)',
+                    border: isMy ? '1px solid var(--m-positive-border)' : '1px solid var(--m-border)',
+                    background: isMy ? 'var(--m-positive-tint)' : 'var(--m-surface)',
                     color: 'var(--m-text)',
                     cursor: c.revealed ? 'default' : 'pointer',
                     minHeight: 56,

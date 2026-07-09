@@ -32,7 +32,8 @@ export default function MobileSettlementModal({ open, onClose, onPlayAgain }: Pr
         <div style={{ textAlign: 'center', marginBottom: 8 }}>
           <div style={{
             width: 80, height: 80, margin: '0 auto',
-            borderRadius: 40, background: 'rgba(34,197,94,0.15)',
+            borderRadius: 40, background: 'var(--m-positive-tint)',
+            border: '1px solid var(--m-positive-border)',
             display: 'grid', placeItems: 'center', fontSize: 40,
           }}>🏆</div>
         </div>

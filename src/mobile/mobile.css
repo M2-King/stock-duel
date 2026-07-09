@@ -1,20 +1,108 @@
 /* =============================================================
-   移动端样式 — 全部用现有 CSS 变量，< 768px 启用
-   调色板：黑底白字，A 股红涨绿跌
+   移动端样式
+   ------------------------------------------------------------
+   Theme:
+     :root                          → 默认 / 深色
+     :root[data-theme="light"]      → 浅色模式
+     :root[data-theme="dark"]       → 显式深色（与默认等价但用于覆盖）
+   所有色值都来自 --m-* 局部变量，便于一处改全应用。
    ============================================================= */
 
-.m-app {
-  --m-bg: var(--bg-base);
-  --m-surface: var(--bg-card);
-  --m-surface-2: var(--bg-elevated);
-  --m-border: var(--border-subtle);
-  --m-text: var(--text-primary);
-  --m-text-2: var(--text-secondary);
-  --m-text-3: var(--text-tertiary);
-  --m-up: var(--price-up);
-  --m-down: var(--price-down);
-  --m-accent: var(--accent);
+/* =============================================================
+   Theme tokens (Dark default — 与 index.css 的黑底白字风格对齐)
+   ============================================================= */
+:root,
+:root[data-theme="dark"] {
+  --m-bg:               #0a0a0f;
+  --m-surface:          #15151d;
+  --m-surface-2:        #1f1f29;
+  --m-surface-3:        #2a2a36;
+  --m-border:           rgba(255, 255, 255, 0.06);
+  --m-border-strong:    rgba(255, 255, 255, 0.14);
+  --m-text:             #f5f0e8;
+  --m-text-2:           rgba(245, 240, 232, 0.78);
+  --m-text-3:           rgba(245, 240, 232, 0.52);
+  --m-text-4:           rgba(245, 240, 232, 0.32);
 
+  --m-up:               #ff4d4f;       /* 红涨 (A 股) */
+  --m-up-bg:            rgba(255, 77, 79, 0.16);
+  --m-up-tint:          rgba(255, 77, 79, 0.10);
+  --m-down:             #16c784;       /* 绿跌 */
+  --m-down-bg:          rgba(22, 199, 132, 0.16);
+  --m-down-tint:        rgba(22, 199, 132, 0.10);
+
+  --m-accent:           #f5f0e8;       /* 主按钮 fill */
+  --m-accent-text:      #0a0a0f;       /* 主按钮上的字色 */
+  --m-info:             #5b8def;
+  --m-success:          #22c55e;
+  --m-warning:          #f59e0b;
+  --m-danger:           #ef4444;
+
+  --m-shadow:           0 4px 20px rgba(0, 0, 0, 0.45);
+  --m-shadow-card:      0 1px 0 rgba(255,255,255,0.03) inset, 0 6px 18px rgba(0,0,0,0.35);
+  --m-modal-shade:      rgba(0, 0, 0, 0.65);
+  --m-pulse:            rgba(34, 197, 94, 0.5);
+  --m-positive-tint:    rgba(34, 197, 94, 0.12);
+  --m-positive-border:  rgba(34, 197, 94, 0.30);
+
+  --m-nav-bg:           rgba(15, 15, 22, 0.92);
+  --m-page-top:         linear-gradient(180deg, rgba(255,255,255,0.025), transparent);
+
+  /* Sectors / role accents（保留与桌面端一致） */
+  --m-role-dealer:      #a78bfa;
+  --m-role-retail:      #5b8def;
+  --m-role-regulator:   #fb923c;
+}
+
+/* =============================================================
+   Light theme
+   ============================================================= */
+:root[data-theme="light"] {
+  --m-bg:               #f7f7f8;
+  --m-surface:          #ffffff;
+  --m-surface-2:        #fafafa;
+  --m-surface-3:        #f0f0f3;
+  --m-border:           rgba(15, 17, 21, 0.06);
+  --m-border-strong:    rgba(15, 17, 21, 0.14);
+  --m-text:             #1a1a1a;
+  --m-text-2:           rgba(15, 17, 21, 0.72);
+  --m-text-3:           rgba(15, 17, 21, 0.50);
+  --m-text-4:           rgba(15, 17, 21, 0.28);
+
+  /* A 股在浅色下保持红涨绿跌，但需要稍深、稍饱和一些才看得清 */
+  --m-up:               #e11d48;
+  --m-up-bg:            rgba(225, 29, 72, 0.10);
+  --m-up-tint:          rgba(225, 29, 72, 0.06);
+  --m-down:             #059669;
+  --m-down-bg:          rgba(5, 150, 105, 0.10);
+  --m-down-tint:        rgba(5, 150, 105, 0.06);
+
+  --m-accent:           #1a1a1a;
+  --m-accent-text:      #ffffff;
+  --m-info:             #2563eb;
+  --m-success:          #059669;
+  --m-warning:          #d97706;
+  --m-danger:           #e11d48;
+
+  --m-shadow:           0 4px 14px rgba(15, 17, 21, 0.08);
+  --m-shadow-card:      0 1px 0 rgba(255,255,255,0.6) inset, 0 4px 14px rgba(15, 17, 21, 0.06);
+  --m-modal-shade:      rgba(15, 17, 21, 0.45);
+  --m-pulse:            rgba(5, 150, 105, 0.4);
+  --m-positive-tint:    rgba(5, 150, 105, 0.10);
+  --m-positive-border:  rgba(5, 150, 105, 0.30);
+
+  --m-nav-bg:           rgba(255, 255, 255, 0.88);
+  --m-page-top:         linear-gradient(180deg, rgba(15,17,21,0.02), transparent);
+
+  --m-role-dealer:      #7c3aed;
+  --m-role-retail:      #2563eb;
+  --m-role-regulator:   #ea580c;
+}
+
+/* =============================================================
+   App shell
+   ============================================================= */
+.m-app {
   display: flex;
   flex-direction: column;
   width: 100vw;
@@ -27,18 +115,18 @@
   line-height: 1.5;
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior: none;
+  transition: background-color 180ms ease, color 180ms ease;
 }
 
-/* ---- Page container with bottom-nav safe area ---- */
 .m-page {
   flex: 1 1 auto;
-  padding-bottom: calc(64px + env(safe-area-inset-bottom));
+  padding-bottom: calc(76px + env(safe-area-inset-bottom));
   min-height: 0;
 }
 
-/* ============================================================
+/* =============================================================
    Bottom nav
-   ============================================================ */
+   ============================================================= */
 .m-bottom-nav {
   position: fixed;
   left: 0;
@@ -48,9 +136,9 @@
   padding-bottom: env(safe-area-inset-bottom);
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  background: rgba(10, 10, 10, 0.94);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: var(--m-nav-bg);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
   border-top: 1px solid var(--m-border);
   z-index: var(--z-sticky);
 }
@@ -69,11 +157,11 @@
   transition: color var(--transition-fast), transform var(--transition-fast);
   -webkit-appearance: none;
   appearance: none;
+  padding-top: 8px;
 }
 .m-tab:active { transform: scale(0.94); }
-.m-tab.active { color: var(--m-accent); }
-.m-tab.trade { color: var(--m-text-3); }
-.m-tab.trade.active { color: var(--m-accent); }
+.m-tab.active { color: var(--m-text); }
+.m-tab.active svg { stroke: var(--m-text); }
 
 .m-tab-icon {
   position: relative;
@@ -82,28 +170,30 @@
   display: grid;
   place-items: center;
 }
+
+/* 交易 tab 突出 (大圆按钮高亮) */
 .m-tab.trade .m-tab-icon {
-  width: 56px;
-  height: 56px;
+  width: 52px;
+  height: 52px;
   border-radius: 18px;
   background: var(--m-text);
   margin-top: -22px;
   color: var(--m-bg);
-  box-shadow: 0 6px 20px rgba(255,255,255,0.16);
+  box-shadow: 0 6px 20px var(--m-pulse);
 }
+.m-tab.trade .m-tab-icon svg { stroke: var(--m-bg); }
 .m-tab.trade.active .m-tab-icon {
-  background: var(--m-text);
-  color: var(--m-bg);
   transform: translateY(-2px);
+  box-shadow: 0 8px 22px var(--m-pulse);
 }
 
 .m-tab-label {
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 500;
   letter-spacing: 0;
   line-height: 1;
 }
-.m-tab.trade .m-tab-label { margin-top: 2px; }
+.m-tab.trade .m-tab-label { margin-top: 4px; font-weight: 600; }
 
 .m-tab-badge {
   position: absolute;
@@ -112,7 +202,7 @@
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: #ef4444;
+  background: var(--m-danger, #ef4444);
   box-shadow: 0 0 0 2px var(--m-bg);
 }
 .m-tab-red-dot {
@@ -122,17 +212,18 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--price-up);
+  background: var(--m-up);
 }
 
-/* ============================================================
+/* =============================================================
    Typography helpers
-   ============================================================ */
+   ============================================================= */
 .m-page-title {
   font-size: var(--text-2xl);
   font-weight: var(--font-bold);
   letter-spacing: -0.02em;
   margin: 0;
+  color: var(--m-text);
 }
 .m-page-subtitle {
   font-size: var(--text-xs);
@@ -147,21 +238,23 @@
 .m-down { color: var(--m-down); }
 .m-mute { color: var(--m-text-3); }
 
-/* ============================================================
+/* =============================================================
    Card primitive
-   ============================================================ */
+   ============================================================= */
 .m-card {
   background: var(--m-surface);
   border: 1px solid var(--m-border);
-  border-radius: 12px;
+  border-radius: 14px;
   padding: 14px 16px;
+  box-shadow: var(--m-shadow-card);
+  transition: background-color 180ms ease, border-color 180ms ease;
 }
 .m-card-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
   font-size: var(--text-sm);
-  padding: 10px 0;
+  padding: 11px 0;
 }
 .m-card-row + .m-card-row {
   border-top: 1px solid var(--m-border);
@@ -176,51 +269,55 @@
 }
 
 .m-section-title {
-  font-size: var(--text-base);
+  font-size: var(--text-sm);
   font-weight: var(--font-semibold);
-  margin: 18px 16px 10px;
-  letter-spacing: -0.01em;
+  color: var(--m-text-2);
+  text-transform: none;
+  letter-spacing: 0.02em;
+  margin: 22px 16px 10px;
 }
 
-/* ============================================================
+/* =============================================================
    Buttons (44px min)
-   ============================================================ */
+   ============================================================= */
 .m-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   min-height: 44px;
-  padding: 0 16px;
-  border-radius: 8px;
+  padding: 0 18px;
+  border-radius: 10px;
   font-size: var(--text-sm);
   font-weight: var(--font-semibold);
   border: 1px solid transparent;
   cursor: pointer;
-  transition: transform var(--transition-fast), background var(--transition-fast);
+  transition: transform var(--transition-fast), background var(--transition-fast), opacity var(--transition-fast);
   -webkit-appearance: none;
   appearance: none;
 }
-.m-btn:active { transform: scale(0.97); }
-.m-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.m-btn:active:not(:disabled) { transform: scale(0.97); }
+.m-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .m-btn-primary {
   background: var(--m-accent);
-  color: var(--m-bg);
+  color: var(--m-accent-text);
 }
-.m-btn-primary:hover:not(:disabled) { background: rgba(255,255,255,0.88); }
-.m-btn-danger { background: var(--price-up); color: #fff; }
+.m-btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+.m-btn-danger { background: var(--m-up); color: #fff; }
+.m-btn-danger:hover:not(:disabled) { filter: brightness(1.08); }
 .m-btn-ghost {
   background: transparent;
   color: var(--m-text-2);
-  border-color: var(--m-border);
+  border-color: var(--m-border-strong);
 }
-.m-btn-up   { background: rgba(220,38,38,0.14);   color: var(--m-up); }
-.m-btn-down { background: rgba(22,163,74,0.14);   color: var(--m-down); }
+.m-btn-ghost:hover:not(:disabled) { background: var(--m-surface-2); }
+.m-btn-up   { background: var(--m-up-bg);   color: var(--m-up);   font-weight: 600; }
+.m-btn-down { background: var(--m-down-bg); color: var(--m-down); font-weight: 600; }
 .m-btn-block { width: 100%; }
 
-/* ============================================================
+/* =============================================================
    Toast
-   ============================================================ */
+   ============================================================= */
 .m-toast {
   position: fixed;
   top: 14px;
@@ -232,11 +329,11 @@
   gap: 10px;
   padding: 12px 16px;
   background: var(--m-surface-2);
-  border: 1px solid var(--border-default);
+  border: 1px solid var(--m-border-strong);
   border-radius: 12px;
   font-size: var(--text-sm);
   color: var(--m-text);
-  box-shadow: 0 12px 32px rgba(0,0,0,0.45);
+  box-shadow: var(--m-shadow);
   animation: m-slide-down 220ms ease-out;
 }
 .m-toast-dot {
@@ -244,25 +341,25 @@
   background: var(--m-text-2);
   flex-shrink: 0;
 }
-.m-toast-success .m-toast-dot { background: var(--color-success); }
-.m-toast-warning .m-toast-dot { background: var(--color-warning); }
-.m-toast-info    .m-toast-dot { background: var(--color-info); }
-.m-toast-danger  .m-toast-dot { background: var(--color-danger); }
+.m-toast-success .m-toast-dot { background: var(--m-success); }
+.m-toast-warning .m-toast-dot { background: var(--m-warning); }
+.m-toast-info    .m-toast-dot { background: var(--m-info); }
+.m-toast-danger  .m-toast-dot { background: var(--m-danger); }
 
 @keyframes m-slide-down {
   from { transform: translateY(-12px); opacity: 0; }
   to   { transform: translateY(0); opacity: 1; }
 }
 
-/* ============================================================
+/* =============================================================
    Page header
-   ============================================================ */
+   ============================================================= */
 .m-page-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px 12px;
-  background: linear-gradient(180deg, rgba(255,255,255,0.02), transparent);
+  padding: 18px 16px 12px;
+  background: var(--m-page-top);
 }
 .m-page-header-left { flex: 1 1 auto; min-width: 0; }
 .m-page-header-right {
@@ -271,32 +368,37 @@
   align-items: center;
 }
 
-/* ============================================================
+/* =============================================================
    Hero asset card (Home)
-   ============================================================ */
+   ============================================================= */
 .m-hero {
-  margin: 12px 16px 0;
-  padding: 16px;
-  border-radius: 16px;
-  background: linear-gradient(135deg, rgba(220,38,38,0.10), rgba(22,163,74,0.06) 60%, rgba(255,255,255,0.03));
+  margin: 8px 16px 0;
+  padding: 18px 18px 14px;
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, var(--m-up-tint) 0%, var(--m-down-tint) 50%, transparent 100%),
+    var(--m-surface);
   border: 1px solid var(--m-border);
   position: relative;
   overflow: hidden;
+  box-shadow: var(--m-shadow-card);
 }
 .m-hero:before {
   content: '';
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle at 0% 0%, rgba(220,38,38,0.10), transparent 60%);
+  background: radial-gradient(circle at 0% 0%, var(--m-up-tint), transparent 60%);
   pointer-events: none;
 }
 .m-hero-label {
-  font-size: var(--text-xs);
+  font-size: 11px;
   color: var(--m-text-3);
   margin-bottom: 6px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 .m-hero-value {
-  font-size: 32px;
+  font-size: 34px;
   font-weight: var(--font-bold);
   letter-spacing: -0.02em;
   font-family: var(--font-mono);
@@ -306,14 +408,16 @@
 .m-hero-meta {
   display: flex;
   justify-content: space-between;
-  margin-top: 12px;
+  margin-top: 14px;
   padding-top: 12px;
-  border-top: 1px solid rgba(255,255,255,0.06);
+  border-top: 1px solid var(--m-border);
+  gap: 10px;
 }
 .m-hero-meta-col {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
 .m-hero-meta-label {
   font-size: 11px;
@@ -324,11 +428,14 @@
   font-weight: var(--font-semibold);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-/* ============================================================
-   Mini sparkline (Home)
-   ============================================================ */
+/* =============================================================
+   Mini sparkline
+   ============================================================= */
 .m-spark {
   margin-top: 8px;
   height: 56px;
@@ -336,9 +443,9 @@
   display: block;
 }
 
-/* ============================================================
-   Action group (Markets / Trade)
-   ============================================================ */
+/* =============================================================
+   Action grid (Home / Markets)
+   ============================================================= */
 .m-action-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -349,31 +456,33 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 10px 4px;
+  gap: 8px;
+  padding: 12px 4px;
   background: var(--m-surface);
   border: 1px solid var(--m-border);
-  border-radius: 12px;
+  border-radius: 14px;
   cursor: pointer;
-  min-height: 68px;
+  min-height: 72px;
+  transition: transform var(--transition-fast), background var(--transition-fast);
 }
 .m-action-item:active { transform: scale(0.97); }
 .m-action-icon {
-  width: 28px; height: 28px;
+  width: 32px; height: 32px;
   display: grid; place-items: center;
-  border-radius: 8px;
-  background: rgba(255,255,255,0.05);
-  color: var(--m-text-2);
+  border-radius: 10px;
+  background: var(--m-surface-2);
+  color: var(--m-text);
   font-size: 16px;
 }
 .m-action-label {
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--m-text-2);
+  font-weight: 500;
 }
 
-/* ============================================================
-   Stock cell (used in list)
-   ============================================================ */
+/* =============================================================
+   Stock cell (list)
+   ============================================================= */
 .m-list {
   margin: 0 16px;
   display: flex;
@@ -384,17 +493,23 @@
   display: grid;
   grid-template-columns: 1fr auto;
   align-items: center;
+  gap: 12px;
   padding: 12px 0;
   border-bottom: 1px solid var(--m-border);
   cursor: pointer;
   min-height: 56px;
+  transition: background var(--transition-fast);
 }
 .m-list-item:last-child { border-bottom: none; }
+.m-list-item:active { background: var(--m-surface-2); }
 .m-list-left { min-width: 0; }
 .m-list-sym {
   font-size: var(--text-base);
   font-weight: var(--font-semibold);
   letter-spacing: -0.01em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .m-list-name {
   font-size: var(--text-xs);
@@ -415,64 +530,71 @@
   letter-spacing: -0.01em;
 }
 .m-list-pct {
-  font-size: var(--text-xs);
+  font-size: 11px;
   margin-top: 2px;
+  font-weight: 500;
 }
 
-/* ============================================================
+/* =============================================================
    Tag / badge
-   ============================================================ */
+   ============================================================= */
 .m-tag {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   padding: 2px 8px;
-  font-size: 11px;
+  font-size: 10.5px;
+  font-weight: 600;
   border-radius: 4px;
-  background: rgba(255,255,255,0.06);
+  background: var(--m-surface-2);
   color: var(--m-text-2);
   white-space: nowrap;
+  letter-spacing: 0.02em;
 }
-.m-tag-dealer  { background: rgba(167,139,250,0.16); color: var(--role-dealer); }
-.m-tag-retail  { background: rgba(96,165,250,0.16);  color: var(--role-retail); }
-.m-tag-reg     { background: rgba(251,146,60,0.16);  color: var(--role-regulator); }
-.m-tag-up      { background: rgba(220,38,38,0.16);   color: var(--m-up); }
-.m-tag-down    { background: rgba(22,163,74,0.16);   color: var(--m-down); }
+.m-tag-dealer  { background: rgba(167,139,250,0.16); color: var(--m-role-dealer); }
+.m-tag-retail  { background: rgba(91,141,239,0.16);  color: var(--m-role-retail); }
+.m-tag-reg     { background: rgba(251,146,60,0.16);  color: var(--m-role-regulator); }
+.m-tag-up      { background: var(--m-up-bg);   color: var(--m-up); }
+.m-tag-down    { background: var(--m-down-bg); color: var(--m-down); }
 
-/* ============================================================
+/* =============================================================
    Form (Trade page)
-   ============================================================ */
+   ============================================================= */
 .m-field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-bottom: 14px;
+  gap: 8px;
+  margin-bottom: 16px;
 }
 .m-field-label {
   font-size: 11px;
   color: var(--m-text-3);
+  font-weight: 500;
+  letter-spacing: 0.02em;
 }
 .m-input, .m-select {
-  min-height: 44px;
+  min-height: 46px;
   background: var(--m-surface);
   border: 1px solid var(--m-border);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 0 14px;
   font-size: var(--text-base);
+  font-family: var(--font-mono);
   color: var(--m-text);
   width: 100%;
   -webkit-appearance: none;
   appearance: none;
+  transition: border-color var(--transition-fast);
 }
 .m-input:focus, .m-select:focus {
-  border-color: var(--border-accent);
+  border-color: var(--m-border-strong);
 }
 
 .m-segmented {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 6px;
-  background: var(--m-surface);
+  background: var(--m-surface-2);
   padding: 4px;
   border-radius: 10px;
   border: 1px solid var(--m-border);
@@ -484,36 +606,40 @@
   font-size: 13px;
   font-weight: 500;
   color: var(--m-text-3);
-  border-radius: 8px;
+  border-radius: 7px;
   cursor: pointer;
   border: none;
   background: transparent;
+  transition: all var(--transition-fast);
+  font-family: inherit;
 }
 .m-segmented-item.active {
   background: var(--m-text);
   color: var(--m-bg);
   font-weight: 600;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
 }
 
-/* ============================================================
+/* =============================================================
    Sparkline path color
-   ============================================================ */
+   ============================================================= */
 .m-spark-up   { stroke: var(--m-up); }
 .m-spark-down { stroke: var(--m-down); }
 .m-spark-flat { stroke: var(--m-text-3); }
 
-/* ============================================================
-   Trading chart (mobile)
-   ============================================================ */
+/* =============================================================
+   Trading chart wrapper
+   ============================================================= */
 .m-chart-wrap {
   margin: 12px 16px 0;
   height: 220px;
   background: var(--m-surface);
   border: 1px solid var(--m-border);
-  border-radius: 12px;
+  border-radius: 14px;
   padding: 8px;
   position: relative;
   overflow: hidden;
+  box-shadow: var(--m-shadow-card);
 }
 .m-chart-svg {
   width: 100%;
@@ -522,13 +648,13 @@
   touch-action: none;
 }
 
-/* ============================================================
+/* =============================================================
    Modal (Match / Settlement)
-   ============================================================ */
+   ============================================================= */
 .m-modal-shade {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.7);
+  background: var(--m-modal-shade);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -544,16 +670,17 @@
   width: 100%;
   max-width: 360px;
   background: var(--m-surface-2);
-  border: 1px solid var(--border-default);
-  border-radius: 16px;
-  padding: 24px 22px;
-  box-shadow: 0 24px 48px rgba(0,0,0,0.5);
+  border: 1px solid var(--m-border-strong);
+  border-radius: 18px;
+  padding: 26px 22px;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.45);
 }
 .m-modal-title {
   font-size: 20px;
   font-weight: 700;
   text-align: center;
   margin: 0 0 4px;
+  color: var(--m-text);
 }
 .m-modal-subtitle {
   font-size: 13px;
@@ -565,9 +692,10 @@
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 8px;
-  padding: 14px;
-  background: rgba(255,255,255,0.04);
-  border-radius: 10px;
+  padding: 16px;
+  background: var(--m-surface);
+  border: 1px solid var(--m-border);
+  border-radius: 12px;
   margin: 14px 0 18px;
 }
 .m-modal-stats .label {
@@ -579,25 +707,26 @@
   font-size: 16px;
   font-weight: 600;
   font-family: var(--font-mono);
+  color: var(--m-text);
 }
 
-/* ============================================================
+/* =============================================================
    Skeleton helper
-   ============================================================ */
+   ============================================================= */
 .m-skel {
-  background: linear-gradient(90deg, rgba(255,255,255,0.04), rgba(255,255,255,0.08), rgba(255,255,255,0.04));
+  background: linear-gradient(90deg, var(--m-surface), var(--m-surface-2), var(--m-surface));
   background-size: 200% 100%;
   animation: m-shimmer 1.4s linear infinite;
   border-radius: 6px;
 }
 @keyframes m-shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
 }
 
-/* ============================================================
-   Role pill
-   ============================================================ */
+/* =============================================================
+   Role pill (dealer / retail / regulator)
+   ============================================================= */
 .m-role-pill {
   display: inline-flex;
   align-items: center;
@@ -606,14 +735,19 @@
   border-radius: 9999px;
   font-size: 11px;
   font-weight: 600;
+  background: var(--m-surface-2);
+  color: var(--m-text);
 }
+.m-role-pill.role-dealer  { background: rgba(167,139,250,0.16); color: var(--m-role-dealer); }
+.m-role-pill.role-retail  { background: rgba(91,141,239,0.16);  color: var(--m-role-retail); }
+.m-role-pill.role-reg     { background: rgba(251,146,60,0.16);  color: var(--m-role-regulator); }
 .m-role-pill .dot {
   width: 6px; height: 6px; border-radius: 50%; background: currentColor;
 }
 
-/* ============================================================
-   Status banner
-   ============================================================ */
+/* =============================================================
+   Status banner (live match indicator)
+   ============================================================= */
 .m-status-banner {
   display: flex;
   align-items: center;
@@ -621,23 +755,23 @@
   gap: 8px;
   margin: 0 16px 12px;
   padding: 10px 14px;
-  background: rgba(34,197,94,0.10);
-  border: 1px solid rgba(34,197,94,0.30);
-  border-radius: 10px;
+  background: var(--m-positive-tint);
+  border: 1px solid var(--m-positive-border);
+  border-radius: 12px;
   font-size: 12px;
-  color: var(--m-text-2);
+  color: var(--m-text);
 }
 .m-status-banner .pulse {
   width: 8px; height: 8px;
   border-radius: 50%;
-  background: #22c55e;
-  box-shadow: 0 0 8px #22c55e;
+  background: var(--m-success);
+  box-shadow: 0 0 8px var(--m-pulse);
   animation: pulse 1.5s infinite;
 }
 
-/* ============================================================
+/* =============================================================
    Markets page extras
-   ============================================================ */
+   ============================================================= */
 .m-markets-indices {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -648,24 +782,25 @@
 .m-markets-idx {
   background: var(--m-surface);
   border: 1px solid var(--m-border);
-  border-radius: 10px;
-  padding: 8px 10px;
+  border-radius: 12px;
+  padding: 10px 8px;
   text-align: center;
+  transition: background-color 180ms ease;
 }
 .m-markets-idx-name { font-size: 10px; color: var(--m-text-3); margin-bottom: 2px; }
-.m-markets-idx-val  { font-size: 13px; font-weight: 700; font-family: var(--font-mono); }
+.m-markets-idx-val  { font-size: 13px; font-weight: 700; font-family: var(--font-mono); color: var(--m-text); }
 .m-markets-idx-chg  { font-size: 10px; margin-top: 2px; font-family: var(--font-mono); }
 
 .m-segments-wrap {
   overflow-x: auto;
-  margin: 8px 16px 10px;
+  margin: 8px 16px 12px;
   scrollbar-width: none;
 }
 .m-segments-wrap::-webkit-scrollbar { display: none; }
 .m-segments {
   display: inline-flex;
   gap: 6px;
-  background: var(--m-surface);
+  background: var(--m-surface-2);
   padding: 4px;
   border-radius: 9999px;
   border: 1px solid var(--m-border);
@@ -682,6 +817,7 @@
   border-radius: 9999px;
   cursor: pointer;
   white-space: nowrap;
+  transition: all var(--transition-fast);
 }
 .m-segment.active {
   background: var(--m-text);
@@ -694,22 +830,24 @@
   background: var(--m-surface);
   border: 1px solid var(--m-border);
   border-radius: 14px;
-  padding: 14px;
+  padding: 14px 16px;
+  box-shadow: var(--m-shadow-card);
 }
 .m-markets-active-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
 .m-markets-active-price {
   font-size: 22px;
   font-weight: 700;
+  font-family: var(--font-mono);
 }
 
-/* ============================================================
-   Dealer tools
-   ============================================================ */
+/* =============================================================
+   Dealer tools grid
+   ============================================================= */
 .m-dealer-tools { padding-bottom: 12px; }
 .m-tools-grid {
   display: grid;
@@ -720,26 +858,27 @@
 .m-tool-card {
   background: var(--m-surface);
   border: 1px solid var(--m-border);
-  border-radius: 12px;
-  padding: 12px;
+  border-radius: 14px;
+  padding: 12px 14px 14px;
   position: relative;
   display: flex;
   flex-direction: column;
+  box-shadow: var(--m-shadow-card);
 }
 .m-tool-card::before {
   content: '';
   position: absolute;
   top: 0; left: 0; right: 0;
-  height: 2px;
-  border-radius: 12px 12px 0 0;
-  background: var(--accent);
+  height: 3px;
+  border-radius: 14px 14px 0 0;
+  background: var(--tool-accent, var(--m-text));
 }
 .m-tool-icon {
-  width: 32px; height: 32px;
-  border-radius: 9px;
+  width: 34px; height: 34px;
+  border-radius: 10px;
   display: grid; place-items: center;
   font-size: 16px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 .m-tool-name {
   display: flex;
@@ -750,25 +889,87 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  margin: 4px 0;
+  margin: 6px 0 4px;
 }
 .m-tool-slider {
   width: 100%;
-  margin-top: 4px;
+  margin-top: 6px;
+  accent-color: var(--tool-accent, var(--m-text));
 }
 .m-tool-slider:disabled { opacity: 0.4; }
 .m-tool-use {
-  min-height: 40px;
+  margin-top: 10px;
+  min-height: 38px;
   padding: 0 12px;
   font-size: 13px;
   font-weight: 600;
   border: none;
-  border-radius: 8px;
+  border-radius: 9px;
   cursor: pointer;
+  transition: filter var(--transition-fast), opacity var(--transition-fast);
 }
-.m-tool-use:disabled { cursor: not-allowed; }
+.m-tool-use:active:not(:disabled) { filter: brightness(0.92); }
+.m-tool-use:disabled { cursor: not-allowed; opacity: 0.5; }
 
-/* ============================================================
-   Responsive — desktop 尺寸下整个 mobile-shell 已由 .app-shell 隐藏，
-   这里不再额外加 display:none，避免与 .app-shell 的 !important 冲突。
-   ============================================================ */
+/* =============================================================
+   Theme switch (Profile page)
+   ============================================================= */
+.m-theme-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  padding: 4px;
+  background: var(--m-surface-2);
+  border: 1px solid var(--m-border);
+  border-radius: 12px;
+  position: relative;
+}
+.m-theme-switch button {
+  min-height: 38px;
+  border: none;
+  background: transparent;
+  color: var(--m-text-3);
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 9px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-family: inherit;
+  transition: all var(--transition-fast);
+}
+.m-theme-switch button.active {
+  background: var(--m-surface);
+  color: var(--m-text);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+
+/* =============================================================
+   iOS-style toggle for profile (refined)
+   ============================================================= */
+.m-switch {
+  width: 46px;
+  height: 28px;
+  border-radius: 14px;
+  background: var(--m-surface-2);
+  border: 1px solid var(--m-border-strong);
+  position: relative;
+  cursor: pointer;
+  padding: 0;
+  transition: background var(--transition-fast);
+}
+.m-switch.on { background: var(--m-text); border-color: var(--m-text); }
+.m-switch .knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--m-bg);
+  transition: left 160ms cubic-bezier(0.34, 1.56, 0.64, 1), background var(--transition-fast);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.25);
+}
+.m-switch.on .knob { left: 20px; background: var(--m-accent-text); }

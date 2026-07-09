@@ -1,8 +1,9 @@
 /**
  * 移动端轻量级内嵌分时/K 线图表（不引 recharts 等重库）。
- * - 24px main pane + 30px volume pane
+ * - 主面板 + 成交量子图
  * - 涨跌停 + 开盘价参考线
  * - 自适应宽度
+ * - 主题感知：所有色值从 CSS 变量读取，跟随深/浅色模式自动切换
  */
 
 import { useMemo, useEffect, useState, useRef } from 'react';
@@ -18,8 +19,6 @@ export default function MobileChart({ symbol: propSymbol }: Props) {
   const currentQuote = useGameStore((s) => s.currentQuote);
   const timelineData = useGameStore((s) => s.timelineData);
   const timelineBySymbol = useGameStore((s) => s.timelineBySymbol);
-  const klines = useGameStore((s) => s.klines);
-  const klinesBySymbol = useGameStore((s) => s.klinesBySymbol);
 
   const sym = propSymbol ?? currentQuote.symbol;
   const points = sym === currentQuote.symbol ? timelineData : (timelineBySymbol[sym] ?? []);
@@ -30,6 +29,12 @@ export default function MobileChart({ symbol: propSymbol }: Props) {
 
   const ref = useRef<HTMLDivElement | null>(null);
   const [w, setW] = useState<number>(320);
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    if (typeof document === 'undefined') return 'dark';
+    const cur = document.documentElement.getAttribute('data-theme');
+    return cur === 'light' ? 'light' : 'dark';
+  });
+
   useEffect(() => {
     if (!ref.current) return;
     const ro = new ResizeObserver(() => {
@@ -39,6 +44,35 @@ export default function MobileChart({ symbol: propSymbol }: Props) {
     setW(ref.current.clientWidth);
     return () => ro.disconnect();
   }, []);
+
+  // 跟随 :root[data-theme] 变化
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const obs = new MutationObserver(() => {
+      const v = document.documentElement.getAttribute('data-theme');
+      setTheme(v === 'light' ? 'light' : 'dark');
+    });
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    return () => obs.disconnect();
+  }, []);
+
+  const palette = useMemo(() => {
+    const isLight = theme === 'light';
+    return {
+      grid:     isLight ? 'rgba(15,17,21,0.06)' : 'rgba(255,255,255,0.05)',
+      openLine: isLight ? 'rgba(15,17,21,0.32)' : 'rgba(255,255,255,0.30)',
+      upper:    isLight ? 'rgba(225,29,72,0.55)' : 'rgba(255,77,79,0.55)',
+      lower:    isLight ? 'rgba(5,150,105,0.55)' : 'rgba(22,199,132,0.55)',
+      upperFg:  isLight ? '#9f1239' : '#ff7882',
+      lowerFg:  isLight ? '#047857' : '#3dd6a6',
+      labelDim: isLight ? 'rgba(15,17,21,0.55)' : 'rgba(255,255,255,0.55)',
+      volLine:  isLight ? 'rgba(15,17,21,0.06)' : 'rgba(255,255,255,0.06)',
+      up:       isLight ? '#e11d48' : '#ff4d4f',
+      down:     isLight ? '#059669' : '#16c784',
+      upTinted: isLight ? 'rgba(225,29,72,0.18)' : 'rgba(255,77,79,0.18)',
+      dnTinted: isLight ? 'rgba(5,150,105,0.18)' : 'rgba(22,199,132,0.18)',
+    };
+  }, [theme]);
 
   const cfg = useMemo(() => {
     const W = Math.max(w, 280);
@@ -63,7 +97,6 @@ export default function MobileChart({ symbol: propSymbol }: Props) {
     const yScale = (v: number) => pad.t + (1 - (v - minV) / Math.max(maxV - minV, 1e-9)) * innerH;
     const xScale = (i: number) => pad.l + i * xStep;
 
-    // 价格变动（每对相邻点的差 → 颜色）
     const segs: { d: string; color: string }[] = [];
     for (let i = 1; i < n; i++) {
       const c0 = closes[i - 1], c1 = closes[i];
@@ -71,17 +104,15 @@ export default function MobileChart({ symbol: propSymbol }: Props) {
       const x1 = xScale(i), y1 = yScale(c1);
       segs.push({
         d: `M ${x0.toFixed(1)} ${y0.toFixed(1)} L ${x1.toFixed(1)} ${y1.toFixed(1)}`,
-        color: c1 >= c0 ? 'var(--price-up)' : 'var(--price-down)',
+        color: c1 >= c0 ? palette.up : palette.down,
       });
     }
-    // 价格线下面积
+
     const lastX = xScale(n - 1);
-    const lastY = yScale(closes[n - 1]);
     const areaD = n >= 2
       ? `${segs.map((s) => s.d).join(' L ').replace(/^M /, 'M ')} L ${lastX.toFixed(1)} ${(pad.t + mainH).toFixed(1)} L ${pad.l.toFixed(1)} ${(pad.t + mainH).toFixed(1)} Z`
       : '';
 
-    // 成交量子图 — 用 |closes[i] - closes[i-1]|
     const vols: number[] = [];
     for (let i = 1; i < n; i++) vols.push(Math.abs(closes[i] - closes[i - 1]));
     const maxVol = Math.max(...vols, 1e-9);
@@ -91,17 +122,25 @@ export default function MobileChart({ symbol: propSymbol }: Props) {
       const y = volTop + (1 - v / maxVol) * volH;
       const h = volTop + volH - y;
       const up = closes[i + 1] >= closes[i];
-      return { x, y, h, color: up ? 'rgba(220,38,38,0.6)' : 'rgba(22,163,74,0.6)' };
+      return {
+        x, y, h,
+        color: up ? `${palette.up}99` : `${palette.down}99`,
+      };
     });
 
     return {
       W, H, pad, mainH, volH, volTop,
       open, upper, lower, closes,
       segs, areaD,
-      yScale, xScale, innerW, volSegs,
+      yScale, xScale, innerW, volSegs, barW,
       n, currentPrice,
     };
-  }, [points, currentPrice, w, sym]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [points, currentPrice, w, sym, palette]);
+
+  const trendUp = cfg.closes[cfg.n - 1] >= cfg.open;
+  const lastLabelColor = trendUp ? palette.up : palette.down;
+  const fillColor = trendUp ? palette.upTinted : palette.dnTinted;
 
   return (
     <div ref={ref} className="m-chart-wrap" style={{ margin: '12px 0 0' }}>
@@ -112,29 +151,30 @@ export default function MobileChart({ symbol: propSymbol }: Props) {
             key={p}
             x1={cfg.pad.l} x2={cfg.W - cfg.pad.r}
             y1={cfg.pad.t + p * cfg.mainH} y2={cfg.pad.t + p * cfg.mainH}
-            stroke="rgba(255,255,255,0.04)" strokeWidth="1"
+            stroke={palette.grid} strokeWidth="1"
           />
         ))}
-        {/* 开盘 / 涨 / 停 3 条参考线 */}
+
+        {/* 开盘 / 涨停 / 跌停 3 条参考线 */}
         <line
           x1={cfg.pad.l} x2={cfg.W - cfg.pad.r}
           y1={cfg.yScale(cfg.open)} y2={cfg.yScale(cfg.open)}
-          stroke="rgba(255,255,255,0.3)" strokeDasharray="4 4" strokeWidth="0.8"
+          stroke={palette.openLine} strokeDasharray="4 4" strokeWidth="0.8"
         />
         <line
           x1={cfg.pad.l} x2={cfg.W - cfg.pad.r}
           y1={cfg.yScale(cfg.upper)} y2={cfg.yScale(cfg.upper)}
-          stroke="rgba(220,38,38,0.5)" strokeDasharray="5 4" strokeWidth="1"
+          stroke={palette.upper} strokeDasharray="5 4" strokeWidth="1"
         />
-        <text x={cfg.W - cfg.pad.r + 4} y={cfg.yScale(cfg.upper) + 3} fontSize="9" fill="rgba(220,38,38,0.85)">
+        <text x={cfg.W - cfg.pad.r + 4} y={cfg.yScale(cfg.upper) + 3} fontSize="9" fill={palette.upperFg}>
           ↑{cfg.upper.toFixed(2)}
         </text>
         <line
           x1={cfg.pad.l} x2={cfg.W - cfg.pad.r}
           y1={cfg.yScale(cfg.lower)} y2={cfg.yScale(cfg.lower)}
-          stroke="rgba(22,163,74,0.5)" strokeDasharray="5 4" strokeWidth="1"
+          stroke={palette.lower} strokeDasharray="5 4" strokeWidth="1"
         />
-        <text x={cfg.W - cfg.pad.r + 4} y={cfg.yScale(cfg.lower) + 3} fontSize="9" fill="rgba(22,163,74,0.85)">
+        <text x={cfg.W - cfg.pad.r + 4} y={cfg.yScale(cfg.lower) + 3} fontSize="9" fill={palette.lowerFg}>
           ↓{cfg.lower.toFixed(2)}
         </text>
 
@@ -142,7 +182,7 @@ export default function MobileChart({ symbol: propSymbol }: Props) {
         {cfg.areaD && <path d={cfg.areaD} fill="url(#m-chart-fill)" />}
         <defs>
           <linearGradient id="m-chart-fill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={cfg.closes[cfg.n - 1] >= cfg.open ? 'rgba(220,38,38,0.18)' : 'rgba(22,163,74,0.18)'} />
+            <stop offset="0%" stopColor={fillColor} />
             <stop offset="100%" stopColor="transparent" />
           </linearGradient>
         </defs>
@@ -150,14 +190,14 @@ export default function MobileChart({ symbol: propSymbol }: Props) {
           <path key={i} d={s.d} stroke={s.color} strokeWidth="1.5" fill="none" vectorEffect="non-scaling-stroke" />
         ))}
 
-        {/* 成交量子图 */}
+        {/* 成交量子图分割线 */}
         <line
           x1={cfg.pad.l} x2={cfg.W - cfg.pad.r}
           y1={cfg.volTop} y2={cfg.volTop}
-          stroke="rgba(255,255,255,0.06)"
+          stroke={palette.volLine}
         />
         {cfg.volSegs.map((b, i) => (
-          <rect key={i} x={b.x} y={b.y} width={barW} height={b.h} fill={b.color} />
+          <rect key={i} x={b.x} y={b.y} width={cfg.barW} height={b.h} fill={b.color} />
         ))}
 
         {/* 右轴价格标签 */}
@@ -172,8 +212,9 @@ export default function MobileChart({ symbol: propSymbol }: Props) {
             x={cfg.W - cfg.pad.r + 4}
             y={cfg.yScale(row.v) + 3}
             fontSize="9"
-            fill={row.hi ? (cfg.currentPrice >= cfg.open ? 'rgba(220,38,38,0.95)' : 'rgba(22,163,74,0.95)') : 'rgba(255,255,255,0.55)'}
+            fill={row.hi ? lastLabelColor : palette.labelDim}
             fontFamily="ui-monospace, monospace"
+            fontWeight={row.hi ? 700 : 400}
           >
             {row.label}
           </text>
