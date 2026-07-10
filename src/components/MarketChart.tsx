@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState, useCallback, type WheelEvent, type PointerEvent, type MouseEvent } from 'react';
 import { useGameStore, type IndicatorSeries } from '../store/gameStore';
+import {
+  priceLimitsFromPrevClose,
+  resolveDayOpen,
+  resolvePrevCloseForLimits,
+} from '../shared/priceLimits';
 import './MarketChart.css';
 
 type Period = '1D' | '1W' | '1M' | '3M' | '1Y' | 'ALL';
@@ -433,7 +438,7 @@ export default function MarketChart({
   showIndicatorSelector = true,
   height,
 }: MarketChartProps) {
-  const { currentQuote, klines, timelineData, klinesBySymbol, timelineBySymbol, stockPrices } = useGameStore();
+  const { currentQuote, klines, timelineData, klinesBySymbol, timelineBySymbol, stockPrices, currentDay, allStocks } = useGameStore();
   const activeSymbol = symbol ?? currentQuote.symbol;
   const activeTimelineData = activeSymbol === currentQuote.symbol
     ? timelineData
@@ -444,6 +449,26 @@ export default function MarketChart({
   const price = activeSymbol === currentQuote.symbol
     ? currentQuote.price
     : (stockPrices[activeSymbol] ?? currentQuote.price);
+  const stockMeta = allStocks.find((s) => s.symbol === activeSymbol);
+
+  const limitBand = useMemo(() => {
+    const quote = activeSymbol === currentQuote.symbol ? currentQuote : undefined;
+    const prevClose = resolvePrevCloseForLimits({
+      currentDay,
+      quote,
+      klines: activeKlines as Array<{ close?: number }>,
+      seedPrice: stockMeta?.price,
+      seedChange: stockMeta?.change,
+    });
+    return priceLimitsFromPrevClose(prevClose);
+  }, [activeSymbol, currentQuote, currentDay, activeKlines, stockMeta]);
+
+  const dayOpen = useMemo(() => resolveDayOpen({
+    quote: activeSymbol === currentQuote.symbol ? currentQuote : undefined,
+    firstIntradayPoint: activeTimelineData[0],
+    prevClose: limitBand.prevClose,
+  }), [activeSymbol, currentQuote, activeTimelineData, limitBand.prevClose]);
+
   const [period, setPeriod] = useState<Period>('1D');
   const [enabledIndicators, setEnabledIndicators] = useState<Set<IndicatorId>>(
     new Set(['MA', 'BOLL', 'KDJ']),
@@ -648,6 +673,9 @@ export default function MarketChart({
           effectiveZoom={effectiveZoom}
           totalCandles={totalCandles}
           visibleCountRaw={visibleCountRaw}
+          limitUp={limitBand.limitUp}
+          limitDown={limitBand.limitDown}
+          dayOpen={dayOpen}
           onZoomIn={zoomIn}
           onZoomOut={zoomOut}
           onPanOffset={(dx) => {
@@ -666,6 +694,7 @@ export default function MarketChart({
 function CandlestickChart({
   data, lineData, period, intradayPoints, indicatorSeries, seriesOffset = 0, enabledIndicators,
   onZoomIn, onZoomOut, onPanOffset, visibleCountRaw,
+  limitUp, limitDown, dayOpen,
 }: {
   data: any[]; lineData: any[] | null; period: Period;
   intradayPoints: number[] | null;
@@ -675,6 +704,9 @@ function CandlestickChart({
   effectiveZoom: number;
   totalCandles: number;
   visibleCountRaw: number;
+  limitUp: number;
+  limitDown: number;
+  dayOpen: number;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onPanOffset: (delta: number) => void;
@@ -801,26 +833,10 @@ function CandlestickChart({
     subs.forEach((s, i) => { subTops[s.kind] = mainTop + mainH + 2 + i * (subH + 2); });
 
     const xScale = (i: number) => padding.left + (i / (WINDOW - 1)) * innerW;
-    const open = points[0];
-    // ⛳ Y 轴范围**固定**为 [跌停, 涨停] = [open*0.9, open*1.1]。
-    //   涨跌停线永远贴在图表上下边缘，与当前价格无关。
-    //   之前用窗口 min/max 自动 scale，或 ±5% band，
-    //   都会让 1% 的价格在视觉上被放大成 10%，误导监管和庄家。
-    let minVal: number;
-    let maxVal: number;
-    {
-      const upper = (open || 1) * 1.10;
-      const lower = (open || 1) * 0.90;
-      minVal = lower;
-      maxVal = upper;
-      if (hasBOLL) {
-        // BOLL / MA 即使超出涨跌停也只是参考线，不影响 Y 轴范围。
-        // 这里保留 clamp：如果 BOLL 短时突破，渲染时会被 yScale 顶到画布外。
-      }
-      if (hasMA) {
-        // 同上：MA 不影响 Y 轴范围。
-      }
-    }
+    const open = dayOpen;
+    // Y 轴固定为 [跌停, 涨停] = prevClose * ±10%（不随滚动窗口首点变化）
+    const minVal = limitDown;
+    const maxVal = limitUp;
     const range = maxVal - minVal || 1;
     const yScale = (v: number) => mainTop + (1 - (v - minVal) / range) * mainH;
 
@@ -903,10 +919,10 @@ function CandlestickChart({
           <text x={width - padding.right + 4} y={openY + 4} fill="rgba(255, 255, 255, 0.6)" fontSize={10}
             fontFamily="ui-monospace, monospace" textAnchor="start">开盘 {open.toFixed(2)}</text>
 
-          {/* 涨跌停线（A 股 ±10%）— Y 轴外/外推延到视口外也保留半透明显示 */}
+          {/* 涨跌停线（A 股 ±10%，基准 = 前收盘价） */}
           {(() => {
-            const upper = open * 1.10;
-            const lower = open * 0.90;
+            const upper = limitUp;
+            const lower = limitDown;
             const upperY = yScale(upper);
             const lowerY = yScale(lower);
             return (
@@ -1196,12 +1212,9 @@ function CandlestickChart({
   };
   subs.forEach((s, i) => { subTops[s.kind] = mainTop + mainH + 2 + i * (subH + 2); });
 
-  // ⛳ K 线 Y 轴范围**固定**为 [open*0.9, open*1.1]，与 OHLC 实际范围解耦。
-  //   这样涨跌停线永远贴在图表上下边缘，监管/庄家看到的视觉幅度与真实幅度一致。
-  //   BOLL / MA 即使超出涨跌停也只是参考线，不影响 Y 轴范围。
-  const dayOpen = data[0]?.y?.[0] ?? data[0]?.open ?? 1;
-  const minVal = dayOpen * 0.9;
-  const maxVal = dayOpen * 1.1;
+  // K 线 Y 轴固定为 [跌停, 涨停]（prevClose * ±10%）
+  const minVal = limitDown;
+  const maxVal = limitUp;
   const range = maxVal - minVal;
 
   const n = data.length;
@@ -1324,8 +1337,8 @@ function CandlestickChart({
 
         {/* 涨跌停虚线 + 标签 (K 线图) */}
         {(() => {
-          const upperY = yScale(dayOpen * 1.10);
-          const lowerY = yScale(dayOpen * 0.90);
+          const upperY = yScale(limitUp);
+          const lowerY = yScale(limitDown);
           return (
             <g>
               <rect x={padding.left} y={Math.max(mainTop, upperY)} width={width - padding.left - padding.right}
@@ -1340,11 +1353,11 @@ function CandlestickChart({
                 stroke="rgba(22, 163, 74, 0.65)" strokeWidth={0.8} strokeDasharray="4 4" />
               <text x={width - padding.right + 4} y={upperY + 4} fill="rgba(220, 38, 38, 0.9)" fontSize={10}
                 fontFamily="ui-monospace, monospace" textAnchor="start" fontWeight={600}>
-                ↑ 涨停 {(dayOpen * 1.10).toFixed(2)}
+                ↑ 涨停 {limitUp.toFixed(2)}
               </text>
               <text x={width - padding.right + 4} y={lowerY + 4} fill="rgba(22, 163, 74, 0.9)" fontSize={10}
                 fontFamily="ui-monospace, monospace" textAnchor="start" fontWeight={600}>
-                ↓ 跌停 {(dayOpen * 0.90).toFixed(2)}
+                ↓ 跌停 {limitDown.toFixed(2)}
               </text>
             </g>
           );

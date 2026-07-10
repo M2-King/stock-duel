@@ -12,7 +12,7 @@ import { Quote, KLine, OrderBook, NewsItem } from '../common/types';
  *   price *= 1 + delta
  *   其中 meanReversion = -deviation*0.01（仅当 |deviation| > 5% 时）
  *
- * sigma = 0.008（明显波动）+ 噪声 + 均值回归 + 自然回调：
+ * sigma = 0.03（每 tick 约 1~3% 波动）+ 噪声 + 均值回归 + 自然回调：
  *   自然走势有波动有回调，庄家拉升在自然噪声里"显得只是顺势"
  *
  * 地板价 = 1 元/股；涨跌停 = prevClose * ±10% hard clamp。
@@ -54,6 +54,9 @@ export class MarketEngine {
   private globalTick = 0;
   /** 每对局 tick 序号 */
   private matchTicks = new Map<string, number>();
+
+  /** Per-tick GBM volatility — 0.02~0.05 is a reasonable band for visible intraday moves. */
+  private static readonly GBM_SIGMA = 0.03;
 
   /** Per-symbol turnover: recent tick amounts + daily sums for dynamic regulatory limits. */
   private turnoverHistory = new Map<string, { recentTicks: number[]; dailyByDay: Map<number, number> }>();
@@ -288,9 +291,9 @@ export class MarketEngine {
 
     // 每个 tick 遍历所有 symbol，各自独立 GBM（价格 + 成交量）
     // 这里用 STOCK_MAP 作为全量来源，确保推送侧与前端 watchlist 的 symbol 集合一致。
-    // sigma 从 0.0006 提到 0.008：自然波动更明显，庄家拉升会被自然噪声掩盖。
+    // sigma 0.03：分时线有明显起伏，庄家拉升仍能被自然噪声部分掩盖
     const symbols = Object.keys(STOCK_MAP);
-    for (const sym of symbols) this.gbmStep(sym, 0.008);
+    for (const sym of symbols) this.gbmStep(sym, MarketEngine.GBM_SIGMA);
 
     // 5 tick 更新盘口
     if (this.globalTick % 5 === 0) {
@@ -329,11 +332,7 @@ export class MarketEngine {
     const lower = s.quote.prevClose * 0.90;
     const refOpen = s.quote.open > 0 ? s.quote.open : s.quote.prevClose;
 
-    // ⛳ 改进 GBM：
-    //   1) 大 sigma (0.008) → 自然波动更明显，庄家拉升更难一眼看穿
-    //   2) 均值回归：偏离 open > 5% 时施加回归力 (deviation * 0.01)，价格会被慢慢拉回中心
-    //   3) 每 tick 加随机噪声 (random * sigma * 0.5)，防止轨迹过于平滑
-    //   4) 涨跌停 ±10% hard clamp，价格永远不会突破 [lower, upper]
+    // ⛳ GBM：sigma≈0.03 → 自然波动更明显；均值回归防止长期单边漂移
     const drift = (Math.random() - 0.48) * sigma;
     const noise = (Math.random() - 0.5) * sigma * 0.5;
     const deviation = (s.quote.price - refOpen) / refOpen; // 正=高于开盘

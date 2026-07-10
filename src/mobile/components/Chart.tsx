@@ -9,6 +9,11 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import { useGameStore } from '../../store/gameStore';
+import {
+  priceLimitsFromPrevClose,
+  resolveDayOpen,
+  resolvePrevCloseForLimits,
+} from '../../shared/priceLimits';
 
 type Period = '1D' | '1W' | '1M';
 
@@ -25,7 +30,6 @@ interface Candle {
   volume: number;
 }
 
-const PRICE_LIMIT_PCT = 0.10;
 const INTRA_WINDOW = 120;
 
 function generateMockCandles(count: number, basePrice: number, seedKey: string): Candle[] {
@@ -107,6 +111,7 @@ export default function MobileChart({ symbol: propSymbol }: Props) {
 
   const sym = propSymbol ?? currentQuote.symbol;
   const stock = allStocks.find((x) => x.symbol === sym);
+  const currentDay = useGameStore((s) => s.currentDay);
   const currentPrice =
     sym === currentQuote.symbol
       ? currentQuote.price
@@ -131,20 +136,29 @@ export default function MobileChart({ symbol: propSymbol }: Props) {
     return () => ro.disconnect();
   }, []);
 
-  // Day open: prefer quote.open / prevClose, else first timeline point
-  const dayOpen = useMemo(() => {
-    if (sym === currentQuote.symbol && currentQuote.open > 0) return currentQuote.open;
-    if (sym === currentQuote.symbol && currentQuote.prevClose > 0) return currentQuote.prevClose;
-    if (stock) {
-      const prev = stock.price - stock.change;
-      if (prev > 0) return prev;
-    }
-    if (timeline.length > 0) return timeline[0];
-    return currentPrice || 1;
-  }, [sym, currentQuote, stock, timeline, currentPrice]);
+  // 涨跌停基准 = 前收盘价（Day1 用初始开盘价；Day2+ 用 quote.prevClose 或昨日 K 线收盘）
+  const limitBand = useMemo(() => {
+    const quote = sym === currentQuote.symbol ? currentQuote : undefined;
+    const prevClose = resolvePrevCloseForLimits({
+      currentDay,
+      quote,
+      klines: activeKlines as Array<{ close?: number }>,
+      seedPrice: stock?.price,
+      seedChange: stock?.change,
+    });
+    return priceLimitsFromPrevClose(prevClose);
+  }, [sym, currentQuote, currentDay, activeKlines, stock]);
 
-  const limitUp = dayOpen * (1 + PRICE_LIMIT_PCT);
-  const limitDown = dayOpen * (1 - PRICE_LIMIT_PCT);
+  const { prevClose: limitPrevClose, limitUp, limitDown } = limitBand;
+
+  const dayOpen = useMemo(() => {
+    const firstPoint = timeline.length > 0 ? timeline[0] : undefined;
+    return resolveDayOpen({
+      quote: sym === currentQuote.symbol ? currentQuote : undefined,
+      firstIntradayPoint: firstPoint,
+      prevClose: limitPrevClose,
+    });
+  }, [sym, currentQuote, timeline, limitPrevClose]);
 
   const intradayPoints = useMemo(() => {
     if (!isIntraday) return [] as number[];
