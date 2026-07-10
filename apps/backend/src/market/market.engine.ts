@@ -12,7 +12,7 @@ import { Quote, KLine, OrderBook, NewsItem } from '../common/types';
  *   price *= 1 + delta
  *   其中 meanReversion = -deviation*0.01（仅当 |deviation| > 5% 时）
  *
- * sigma = 0.03（每 tick 约 1~3% 波动）+ 噪声 + 均值回归 + 自然回调：
+ * sigma = 0.06（每 200ms tick 波动更明显；对局仍 120 tick/天 × 3s）
  *   自然走势有波动有回调，庄家拉升在自然噪声里"显得只是顺势"
  *
  * 地板价 = 1 元/股；涨跌停 = prevClose * ±10% hard clamp。
@@ -55,8 +55,8 @@ export class MarketEngine {
   /** 每对局 tick 序号 */
   private matchTicks = new Map<string, number>();
 
-  /** Per-tick GBM volatility — 0.02~0.05 is a reasonable band for visible intraday moves. */
-  private static readonly GBM_SIGMA = 0.03;
+  /** Per-tick GBM volatility — visible intraday moves; 120 game ticks/day unchanged */
+  private static readonly GBM_SIGMA = 0.06;
 
   /** Per-symbol turnover: recent tick amounts + daily sums for dynamic regulatory limits. */
   private turnoverHistory = new Map<string, { recentTicks: number[]; dailyByDay: Map<number, number> }>();

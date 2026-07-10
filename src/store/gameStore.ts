@@ -646,6 +646,33 @@ function cashSyncPatch(
     : null;
   return { cash, playerCash: cash, dealerResources, dealerInfo };
 }
+
+const TIMELINE_MAX_POINTS = 500;
+/** 本地 / 离线 GBM 波动率（与后端 GBM_SIGMA 同量级） */
+const LOCAL_GBM_SIGMA = 0.06;
+
+/** 行情推送：更新序列最后一个点，使图表末端与 headline 价格同步 */
+function patchTimelineLastPoint(timeline: number[], price: number): number[] {
+  if (!Number.isFinite(price) || price <= 0) return timeline;
+  if (timeline.length === 0) return [price];
+  return [...timeline.slice(0, -1), price];
+}
+
+/** 游戏 tick（约 3s）：为分时图追加一个新点 */
+function appendTimelineGameTick(
+  timelineBySymbol: Record<string, number[]>,
+  stockPrices: Record<string, number>,
+  symbols: string[],
+): Record<string, number[]> {
+  const next = { ...timelineBySymbol };
+  for (const sym of symbols) {
+    const px = stockPrices[sym];
+    if (!Number.isFinite(px) || px <= 0) continue;
+    const cur = next[sym] ?? [];
+    next[sym] = [...cur, px].slice(-TIMELINE_MAX_POINTS);
+  }
+  return next;
+}
 const initialPlayersInGame: Player[] = [
   { id: 'p1', name: 'Market Maker', rank: 0, totalAssets: STARTING_ASSETS, weeklyReturn: 0, role: 'dealer' },
   { id: 'p2', name: 'Retail Investor', rank: 0, totalAssets: STARTING_ASSETS, weeklyReturn: 0, role: 'retail' },
@@ -1556,7 +1583,7 @@ simulation: {
     set((s) => {
       const sym = s.currentQuote.symbol;
       const cur = s.timelineBySymbol[sym] ?? [];
-      const newTimeline = [...cur, newPrice].slice(-240);
+      const newTimeline = patchTimelineLastPoint(cur, newPrice);
       const newCash = s.cash - realCost + extraCashEffect;
       const dr = s.dealerResources;
       const positionValue = s.holdings.reduce((sum, h) => {
@@ -2182,6 +2209,7 @@ simulation: {
       gameStatus: 'playing',
       simulation: { ...state.simulation, session: 'afternoon', dailySettlement: null, lunchAutoTimer: null, _sessionInitialized: false },
     });
+    get().startSimulation();
   },
 
   endTradingDay: () => {
@@ -2284,6 +2312,7 @@ simulation: {
         _sessionInitialized: false,
       },
     });
+    get().startSimulation();
   },
 
   startSimulation: () => {
@@ -2436,8 +2465,16 @@ simulation: {
     let nextStockPrices: Record<string, number>;
     let newVolume: number;
     const gbmStep = (prevPrice: number) => {
-      const delta = (Math.random() - 0.48) * 0.005;
-      return Math.max(1, prevPrice * (1 + delta));
+      const sigma = LOCAL_GBM_SIGMA;
+      const drift = (Math.random() - 0.48) * sigma;
+      const noise = (Math.random() - 0.5) * sigma * 0.5;
+      const prevClose = state.currentQuote.prevClose || prevPrice;
+      const upper = prevClose * 1.10;
+      const lower = prevClose * 0.90;
+      let next = Math.max(1, prevPrice * (1 + drift + noise));
+      if (next > upper) next = upper;
+      if (next < lower) next = lower;
+      return next;
     };
     const gbmHeldSymbol = (sym: string): number => {
       const held = state.holdings.find((h) => h.symbol === sym);
@@ -2472,29 +2509,30 @@ simulation: {
       : null;
 
     const sym2 = state.currentQuote.symbol;
-    // 后端模式下 timeline 由 _applyServerTick 按 tickInterval 节流推进（保持 1x=3s/点
-    //   → 1 天 = 120 tick × 3s = 6 分钟），这里不重复推，否则同一秒出现两次重复点。
-    // 本地模式下 processTick 自己跑 GBM，按 tickInterval 自然推。
+    const timelineSymbols = new Set<string>([
+      sym2,
+      ...state.holdings.map((h) => h.symbol),
+      ...Object.keys(state.timelineBySymbol),
+    ]);
+
     let tlNext = state.timelineData;
     let tlBySymbolNext = state.timelineBySymbol;
     if (!isBackend) {
-      // 本地模式：把每个 holdings symbol 的 GBM 新价都追加到它自己的 timelineBySymbol，
-      // 否则切换到非当前 main symbol 时图表会退回静态 mock。
-      tlBySymbolNext = { ...state.timelineBySymbol };
-      for (const h of state.holdings) {
-        const symH = h.symbol;
-        const px = nextStockPrices[symH] ?? h.marketPrice ?? h.avgPrice;
-        if (!Number.isFinite(px) || px <= 0) continue;
-        const curTl = tlBySymbolNext[symH] ?? [];
-        const lastPushed = curTl.length ? curTl[curTl.length - 1] : undefined;
-        if (px !== lastPushed) {
-          tlBySymbolNext = {
-            ...tlBySymbolNext,
-            [symH]: [...curTl, px].slice(-500),
-          };
-        }
-      }
+      // 本地模式：每个游戏 tick 追加一点；GBM 已在上面更新过价格
+      tlBySymbolNext = appendTimelineGameTick(
+        state.timelineBySymbol,
+        nextStockPrices,
+        [...timelineSymbols],
+      );
       tlNext = tlBySymbolNext[sym2] ?? [];
+    } else {
+      // 后端模式：游戏 tick 追加新点；盘内 200ms 行情在 _applyServerTick 里 patch 末点
+      tlBySymbolNext = appendTimelineGameTick(
+        state.timelineBySymbol,
+        nextStockPrices,
+        [...timelineSymbols],
+      );
+      tlNext = tlBySymbolNext[sym2] ?? state.timelineData;
     }
     // 后端模式 currentQuote.price 已经被 _applyServerTick 实时更新，这里 newPrice === state.currentQuote.price 是 no-op；
     //   但 high/low/timestamp 还是要维护。stockPrices 同理。
@@ -2525,15 +2563,19 @@ simulation: {
     const session = state.simulation.session;
     // Only evaluate session boundaries once the tick engine is armed and we have
     // advanced past the opening tick — prevents stale tick/day from firing at match start.
+    let sessionTransitioned = false;
     if (state.simulation._sessionInitialized) {
       if (session === 'morning' && nextTick >= TICKS_PER_HALF) {
         // 11:30 上午收盘 → 午休
         get().endLunchBreak();
+        sessionTransitioned = true;
       } else if (session === 'afternoon' && nextTick >= TICKS_PER_HALF) {
         // 15:00 全天收盘
         get().endTradingDay();
+        sessionTransitioned = true;
       }
     }
+    if (sessionTransitioned) return;
 
     // Multi-symbol mark-to-market: every holding uses its own stockPrices[symbol].
     // Holdings of symbols not currently selected still get marked at their last known price.
@@ -3083,8 +3125,8 @@ simulation: {
    * 把 server market:tick payload 同步到本地 store：
    *  - quote → currentQuote + stockPrices（多 symbol mark-to-market）
    *  - orderBook
-   *  - timeline → 节流按 simulation.speed 动态算：1x=3000ms、4x=750ms。
-   *    价格变了才推（避免重复值），节流窗口内不推。
+   *  - timeline → 每个 market:tick 更新末点（与 headline 价格同步）；
+   *    游戏 tick（processTick）再追加新点 → 1 天 120 点 @ 3s。
    *  帧率敏感（200ms 一次），所以只做最少 set()。
    */
   _applyServerTick: (payload) => {
@@ -3158,29 +3200,18 @@ simulation: {
           }
         : state.currentQuote;
 
-    // 3. timeline 推送（节流）：把每个 symbol 的实时价格追加到自己的 timelineBySymbol
-    const simSpeed = state.simulation.speed || 1;
-    const tickInterval = Math.max(250, Math.floor(3000 / simSpeed));
-    const lastTickTime = get().simulation._lastTimelineTick ?? 0;
-    const throttleElapsed = now - lastTickTime >= tickInterval;
-
+    // 3. timeline — 每个行情 tick 把末点拉到最新价（线尾与报价同步）
     let timelineBySymbol = state.timelineBySymbol;
     let timelineData = state.timelineData;
-    if (throttleElapsed) {
-      const nextTimelineBySymbol: Record<string, number[]> = { ...state.timelineBySymbol };
-      for (const sym of Object.keys(quotesBySymbol)) {
-        const px = stockPrices[sym];
-        if (!Number.isFinite(px) || px <= 0) continue;
-        const curTl = nextTimelineBySymbol[sym] ?? [];
-        const lastPushed = curTl.length ? curTl[curTl.length - 1] : undefined;
-        if (px !== lastPushed) {
-          nextTimelineBySymbol[sym] = [...curTl, px].slice(-500);
-        }
-      }
-      timelineBySymbol = nextTimelineBySymbol;
-      timelineData = nextTimelineBySymbol[activeSymbol] ?? state.timelineData;
-      set((s) => ({ simulation: { ...s.simulation, _lastTimelineTick: now } }));
+    const nextTimelineBySymbol: Record<string, number[]> = { ...state.timelineBySymbol };
+    for (const sym of Object.keys(quotesBySymbol)) {
+      const px = stockPrices[sym];
+      if (!Number.isFinite(px) || px <= 0) continue;
+      const curTl = nextTimelineBySymbol[sym] ?? [];
+      nextTimelineBySymbol[sym] = patchTimelineLastPoint(curTl, px);
     }
+    timelineBySymbol = nextTimelineBySymbol;
+    timelineData = nextTimelineBySymbol[activeSymbol] ?? state.timelineData;
 
     // 4. mark-to-market (持仓现值) — 用更新后的 stockPrices 重算 totalAssets
     //    Holding 接口用的是 shares，不是 quantity；以前误用 h.quantity 让 positionValue 变 NaN → totalAssets = NaN。
@@ -3510,7 +3541,7 @@ simulation: {
       console.log('[Dealer] effect price push', sym, newPrice);
 
       const curTl = state.timelineBySymbol[sym] ?? [];
-      const tlNext = [...curTl, newPrice].slice(-500);
+      const tlNext = patchTimelineLastPoint(curTl, newPrice);
       const isMain = sym === state.currentQuote.symbol;
       const nextQuote = isMain
         ? {
@@ -3663,6 +3694,9 @@ simulation: {
   },
 
   _applyMatchTick: (payload) => {
+    // 对局日程（午休/收盘/新一天）只由本地 processTick 驱动。
+    // 后端 match:tick 是全局计数，午休时仍递增，会覆盖 currentTick 导致疯狂跳日。
+    if (get().backendMode) return;
     if (typeof payload?.currentTick === 'number') {
       set({ currentTick: payload.currentTick });
       // Prune expired restrictions
