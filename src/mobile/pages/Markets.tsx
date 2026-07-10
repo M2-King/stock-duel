@@ -113,8 +113,7 @@ export default function MobileMarkets() {
                 className="m-btn m-btn-up m-btn-block"
                 onClick={() => {
                   useGameStore.getState().selectSymbol(active.stock.symbol);
-                  // 触发切 Tab（MobileApp 监听）
-                  document.dispatchEvent(new CustomEvent('m-goto-tab', { detail: { tab: 'trade' } }));
+                  document.dispatchEvent(new CustomEvent('m-goto-tab', { detail: { tab: 'trade', side: 'buy' } }));
                 }}
               >买入</button>
               <button
@@ -122,7 +121,7 @@ export default function MobileMarkets() {
                 className="m-btn m-btn-down m-btn-block"
                 onClick={() => {
                   useGameStore.getState().selectSymbol(active.stock.symbol);
-                  document.dispatchEvent(new CustomEvent('m-goto-tab', { detail: { tab: 'trade' } }));
+                  document.dispatchEvent(new CustomEvent('m-goto-tab', { detail: { tab: 'trade', side: 'sell' } }));
                 }}
               >卖出</button>
             </div>

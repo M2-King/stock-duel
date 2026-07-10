@@ -2,8 +2,8 @@
  * 交易页：
  *  - 顶部：当前标的选择 + 价格 / 涨跌 / 持仓现状
  *  - 角色分流：
- *      dealer     → MobileDealerTools（6 工具 + 实时成本预览）
- *      regulator  → 监管提示 + 跳到 alerts
+ *      dealer     → 庄家工具 + 买入/卖出表单
+ *      regulator  → 监管提示
  *      retail     → 买入 / 卖出 表单
  *  - 所有下注 / 操盘动作都直接调 store 的 action
  */
@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import MobileChart from '../components/Chart';
 import MobileDealerTools from '../components/DealerTools';
+import type { MobileTab } from '../components/BottomNav';
 
 const PERCENT_PRESETS = [25, 50, 75, 100] as const;
 const LEVER_PRESETS = [1, 2, 3, 5] as const;
@@ -52,6 +53,17 @@ export default function MobileTrade() {
   }, [pct, lev, side, cash, currentQuote.price, currentQuote.symbol, holdings]);
 
   useEffect(() => { setLev(leverage); }, [leverage]);
+
+  // Markets 页「买入/卖出」跳转时带上 side
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onGoto = (e: Event) => {
+      const detail = (e as CustomEvent<{ tab?: MobileTab; side?: 'buy' | 'sell' }>).detail;
+      if (detail?.side === 'buy' || detail?.side === 'sell') setSide(detail.side);
+    };
+    document.addEventListener('m-goto-tab', onGoto);
+    return () => document.removeEventListener('m-goto-tab', onGoto);
+  }, []);
 
   const upper = (currentQuote.prevClose || currentQuote.price) * 1.10;
   const lower = (currentQuote.prevClose || currentQuote.price) * 0.90;
@@ -101,34 +113,8 @@ export default function MobileTrade() {
     }
   };
 
-  // === dealer 分支 ===
-  if (role === 'dealer' && gameStatus === 'playing') {
-    return (
-      <div className="m-trade">
-        <header className="m-page-header">
-          <h1 className="m-page-title">操盘</h1>
-        </header>
-        <section className="m-card" style={{ margin: '0 16px' }}>
-          <div className="m-card-row">
-            <span className="label">当前标的</span>
-            <span className="value">{currentQuote.symbol} · {currentQuote.name}</span>
-          </div>
-          <div className="m-card-row">
-            <span className="label">现价 / 涨跌停</span>
-            <span className="value m-mono">
-              <span className={currentQuote.change >= 0 ? 'm-up' : 'm-down'}>{currentQuote.price.toFixed(2)}</span>
-              <span style={{ color: 'var(--m-text-3)', margin: '0 6px' }}>·</span>
-              <span style={{ color: 'var(--m-up)' }}>↑{upper.toFixed(2)}</span>
-              <span style={{ color: 'var(--m-text-3)', margin: '0 6px' }}>/</span>
-              <span style={{ color: 'var(--m-down)' }}>↓{lower.toFixed(2)}</span>
-            </span>
-          </div>
-        </section>
-        <MobileChart symbol={currentQuote.symbol} />
-        <MobileDealerTools symbol={currentQuote.symbol} />
-      </div>
-    );
-  }
+  const isDealerPlaying = role === 'dealer' && gameStatus === 'playing';
+  const showTradeForm = role === 'retail' || role === 'dealer';
 
   // === regulator 分支 ===
   if (role === 'regulator' && gameStatus === 'playing') {
@@ -158,11 +144,23 @@ export default function MobileTrade() {
     );
   }
 
-  // === retail 分支 ===
+  if (!showTradeForm) {
+    return (
+      <div className="m-trade">
+        <header className="m-page-header">
+          <h1 className="m-page-title">交易</h1>
+        </header>
+        <p style={{ padding: '12px 16px', fontSize: 12, color: 'var(--m-text-3)' }}>
+          请先开始对局后再交易。
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="m-trade">
       <header className="m-page-header">
-        <h1 className="m-page-title">交易</h1>
+        <h1 className="m-page-title">{isDealerPlaying ? '操盘' : '交易'}</h1>
       </header>
 
       {/* 当前标的状态 */}
@@ -197,6 +195,8 @@ export default function MobileTrade() {
       </section>
 
       <MobileChart symbol={currentQuote.symbol} />
+
+      {isDealerPlaying && <MobileDealerTools symbol={currentQuote.symbol} />}
 
       {/* 买卖 segmented */}
       <div style={{ padding: '14px 16px 0' }}>

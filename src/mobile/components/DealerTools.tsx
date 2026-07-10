@@ -1,14 +1,18 @@
 /**
  * 移动端庄家工具面板（6 工具）
- *  - 2 列网格
- *  - 每个卡：图标 + 名称 + power 滑块 + Use 按钮
- *  - cost 实时从后端 /api/dealer/preview-cost 拉
+ *  - cost/effect 随 power / symbol 更新（不随每 tick 价格刷新，避免整页闪烁）
+ *  - 工具卡 React.memo，仅数字区重绘
  */
 
-import { useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import { get } from '../../services/apiService';
 import { useTheme } from '../hooks/useTheme';
+import {
+  previewDealerAction,
+  formatDealerCost,
+  formatDealerEffectLabel,
+} from '../../shared/dealerFormulas';
 
 type ToolType = 'pump' | 'press' | 'accumulate' | 'distribute' | 'wash' | 'fake';
 
@@ -31,181 +35,248 @@ const TOOLS: Tool[] = [
   { id: 'fake',       label: 'Spoof',      cn: '假挂单', icon: '🎭', accent: '#06b6d4', iconBg: 'rgba(6,182,212,0.18)',  desc: '挂大单诱盘' },
 ];
 
+const DEFAULT_POWER: Record<ToolType, number> = {
+  pump: 50, press: 50, accumulate: 50, distribute: 50, wash: 50, fake: 50,
+};
+
+interface Preview {
+  cost: number;
+  effectLabel: string;
+}
+
+function buildLocalPreview(id: ToolType, symbol: string, power: number): Preview {
+  const p = previewDealerAction(id, symbol, power);
+  return { cost: p.cost, effectLabel: p.effectLabel };
+}
+
+/** 仅资金/风险条 — 只在 dealerResources 变时重渲 */
+const DealerResourceBar = memo(function DealerResourceBar() {
+  const cash = useGameStore((s) => s.dealerResources?.cash ?? 0);
+  const risk = useGameStore((s) => s.dealerResources?.riskIndex ?? 0);
+  return (
+    <section className="m-card" style={{ margin: '0 16px 12px', padding: '12px 14px' }}>
+      <div className="m-card-row" style={{ borderTop: 'none', padding: '4px 0' }}>
+        <span className="label">资金池</span>
+        <span className="value m-mono">{formatDealerCost(cash)}</span>
+      </div>
+      <div className="m-card-row" style={{ padding: '4px 0' }}>
+        <span className="label">风险</span>
+        <span className={`value m-mono ${risk > 70 ? 'm-up' : ''}`}>{risk.toFixed(1)}%</span>
+      </div>
+    </section>
+  );
+});
+
+/** 现价条 — 只有价格变时重渲 */
+const DealerQuoteBar = memo(function DealerQuoteBar({ symbol }: { symbol: string }) {
+  const price = useGameStore((s) => s.currentQuote.price);
+  const change = useGameStore((s) => s.currentQuote.change);
+  return (
+    <div style={{ padding: '0 16px', marginBottom: 8 }}>
+      <p style={{ fontSize: 11, color: 'var(--m-text-3)', margin: 0 }}>
+        操作标的：<span style={{ color: 'var(--m-text)' }} className="m-mono">{symbol}</span>
+        <span style={{ marginLeft: 8 }}>
+          现价 <span className={`m-mono ${change >= 0 ? 'm-up' : 'm-down'}`}>{price.toFixed(2)}</span>
+        </span>
+      </p>
+    </div>
+  );
+});
+
+interface ToolCardProps {
+  tool: Tool;
+  power: number;
+  preview: Preview;
+  cash: number;
+  blockedByLimit: boolean;
+  theme: 'light' | 'dark';
+  onPowerChange: (id: ToolType, v: number) => void;
+  onPowerCommit: (id: ToolType) => void;
+  onUse: (tool: Tool) => void;
+}
+
+const DealerToolCard = memo(function DealerToolCard({
+  tool,
+  power,
+  preview,
+  cash,
+  blockedByLimit,
+  theme,
+  onPowerChange,
+  onPowerCommit,
+  onUse,
+}: ToolCardProps) {
+  const cost = preview.cost;
+  const tooExpensive = cash < cost && cost > 0;
+  const disabled = blockedByLimit || tooExpensive;
+
+  return (
+    <div
+      className="m-tool-card"
+      style={{ '--accent': tool.accent, '--icon-bg': tool.iconBg } as React.CSSProperties}
+    >
+      <div className="m-tool-icon" style={{ background: tool.iconBg }}>
+        {tool.icon}
+      </div>
+      <div className="m-tool-name">
+        <span style={{ fontSize: 14, fontWeight: 600 }}>{tool.label}</span>
+        <span style={{ fontSize: 11, color: 'var(--m-text-3)', marginLeft: 6 }}>{tool.cn}</span>
+      </div>
+      <div style={{ fontSize: 10, color: 'var(--m-text-3)', marginBottom: 6 }}>{tool.desc}</div>
+      <div className="m-tool-cost">
+        <span style={{ fontSize: 11, color: 'var(--m-text-3)' }}>成本</span>
+        <span className={`m-mono ${tooExpensive ? 'm-up' : ''}`} style={{ fontSize: 13, fontWeight: 700 }}>
+          {formatDealerCost(cost)}
+        </span>
+      </div>
+      <div style={{ fontSize: 11, color: tool.accent, marginBottom: 8 }}>
+        {preview.effectLabel}
+      </div>
+      <input
+        type="range"
+        min={10}
+        max={100}
+        step={5}
+        value={power}
+        onChange={(e) => onPowerChange(tool.id, Number(e.target.value))}
+        onMouseUp={() => onPowerCommit(tool.id)}
+        onTouchEnd={() => onPowerCommit(tool.id)}
+        disabled={disabled}
+        className="m-tool-slider"
+        style={{ accentColor: tool.accent }}
+      />
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--m-text-3)' }}>
+        <span>强度</span>
+        <span className="m-mono">{power}%</span>
+      </div>
+      <button
+        type="button"
+        className="m-tool-use"
+        onClick={() => onUse(tool)}
+        disabled={disabled}
+        style={{
+          marginTop: 8,
+          background: disabled ? 'var(--m-surface-2)' : tool.accent,
+          color: disabled ? 'var(--m-text-3)' : (theme === 'light' ? '#fff' : '#0a0a0a'),
+        }}
+      >
+        {blockedByLimit ? (tool.id === 'pump' ? '已涨停' : '已跌停') : tooExpensive ? '资金不足' : 'Use'}
+      </button>
+    </div>
+  );
+});
+
 interface Props {
   symbol: string;
 }
 
 export default function MobileDealerTools({ symbol }: Props) {
-  const currentQuote = useGameStore((s) => s.currentQuote);
-  const dealerResources = useGameStore((s) => s.dealerResources);
+  const cash = useGameStore((s) => s.dealerResources?.cash ?? 0);
   const executeDealerAction = useGameStore((s) => s.executeDealerAction);
-
+  const backendMode = useGameStore((s) => s.backendMode);
+  const price = useGameStore((s) => s.currentQuote.price);
+  const prevClose = useGameStore((s) => s.currentQuote.prevClose || s.currentQuote.price);
   const { theme } = useTheme();
 
-  const cash = dealerResources?.cash ?? 0;
-  const risk = dealerResources?.riskIndex ?? 0;
-  const upper = (currentQuote.prevClose || currentQuote.price) * 1.10;
-  const lower = (currentQuote.prevClose || currentQuote.price) * 0.90;
-  const isUpper = currentQuote.price >= upper - 0.001;
-  const isLower = currentQuote.price <= lower + 0.001;
+  const upper = prevClose * 1.10;
+  const lower = prevClose * 0.90;
+  const isUpper = price >= upper - 0.001;
+  const isLower = price <= lower + 0.001;
 
-  // 每张卡 power
-  const [powerMap, setPowerMap] = useState<Record<ToolType, number>>({
-    pump: 50, press: 50, accumulate: 50, distribute: 50, wash: 50, fake: 50,
-  });
-  // 后端 cost
-  const [costMap, setCostMap] = useState<Record<ToolType, number>>({
-    pump: 0, press: 0, accumulate: 0, distribute: 0, wash: 0, fake: 0,
-  });
-  const [loading, setLoading] = useState<Record<ToolType, boolean>>({
-    pump: false, press: false, accumulate: false, distribute: false, wash: false, fake: false,
+  const [powerMap, setPowerMap] = useState<Record<ToolType, number>>({ ...DEFAULT_POWER });
+  const [previewMap, setPreviewMap] = useState<Record<ToolType, Preview>>(() => {
+    const m = {} as Record<ToolType, Preview>;
+    (Object.keys(DEFAULT_POWER) as ToolType[]).forEach((id) => {
+      m[id] = buildLocalPreview(id, symbol, DEFAULT_POWER[id]);
+    });
+    return m;
   });
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; msg: string } | null>(null);
 
-  // 取 cost
-  const refreshCost = async (id: ToolType) => {
-    setLoading((l) => ({ ...l, [id]: true }));
-    try {
-      const res: any = await get(`/api/dealer/preview-cost?type=${id}&power=${powerMap[id]}&symbol=${symbol}`);
-      if (res?.code === 0 && typeof res.data?.cost === 'number') {
-        setCostMap((m) => ({ ...m, [id]: res.data.cost }));
+  const refreshPreview = useCallback(async (id: ToolType, power: number) => {
+    if (backendMode) {
+      try {
+        const res: any = await get(`/api/dealer/preview-cost?type=${id}&power=${power}&symbol=${symbol}`);
+        if (res?.code === 0 && typeof res.data?.cost === 'number') {
+          const effectPct = res.data.effectPct ?? 0;
+          setPreviewMap((m) => ({
+            ...m,
+            [id]: {
+              cost: res.data.cost,
+              effectLabel: formatDealerEffectLabel(id, effectPct),
+            },
+          }));
+          return;
+        }
+      } catch {
+        /* fall through to local */
       }
-    } catch {
-      /* ignore */
-    } finally {
-      setLoading((l) => ({ ...l, [id]: false }));
     }
-  };
+    setPreviewMap((m) => ({ ...m, [id]: buildLocalPreview(id, symbol, power) }));
+  }, [symbol, backendMode]);
 
-  // symbol / power 变化时刷新全部
+  // symbol / backendMode 变化时刷新全部（桌面端同样不在 price tick 上刷新）
   useEffect(() => {
-    (Object.keys(powerMap) as ToolType[]).forEach((id) => refreshCost(id));
+    (Object.keys(powerMap) as ToolType[]).forEach((id) => {
+      refreshPreview(id, powerMap[id]);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol, currentQuote.price]);
+  }, [symbol, backendMode]);
 
-  const onUse = async (tool: Tool) => {
+  const onPowerChange = useCallback((id: ToolType, v: number) => {
+    setPowerMap((m) => ({ ...m, [id]: v }));
+    // 本地即时更新 cost/effect，无需 loading
+    setPreviewMap((m) => ({ ...m, [id]: buildLocalPreview(id, symbol, v) }));
+  }, [symbol]);
+
+  const onPowerCommit = useCallback((id: ToolType) => {
+    refreshPreview(id, powerMap[id]);
+  }, [powerMap, refreshPreview]);
+
+  const onUse = useCallback(async (tool: Tool) => {
     const power = powerMap[tool.id];
-    const cost = costMap[tool.id] || 0;
+    const cost = previewMap[tool.id]?.cost ?? 0;
     if ((tool.id === 'pump' && isUpper) || (tool.id === 'press' && isLower)) {
       setFeedback({ kind: 'error', msg: `${tool.id === 'pump' ? '已涨停' : '已跌停'}，无法操作` });
       setTimeout(() => setFeedback(null), 1500);
       return;
     }
     if (cash < cost) {
-      setFeedback({ kind: 'error', msg: `资金不足：需要 ${fmtMoney(cost)}` });
+      setFeedback({ kind: 'error', msg: `资金不足：需要 ${formatDealerCost(cost)}` });
       setTimeout(() => setFeedback(null), 1500);
       return;
     }
     const r = await Promise.resolve(executeDealerAction({ type: tool.id, power, cost }));
     if (r?.success) {
-      setFeedback({ kind: 'success', msg: `${tool.cn} 成功 — ${fmtMoney(cost)}` });
-      refreshCost(tool.id);
+      setFeedback({ kind: 'success', msg: `${tool.cn} 成功 — ${formatDealerCost(cost)}` });
+      refreshPreview(tool.id, power);
     } else {
       setFeedback({ kind: 'error', msg: r?.error || '执行失败' });
     }
     setTimeout(() => setFeedback(null), 1800);
-  };
+  }, [powerMap, previewMap, isUpper, isLower, cash, executeDealerAction, refreshPreview]);
 
   return (
     <div className="m-dealer-tools">
       <h3 className="m-section-title">庄家工具</h3>
+      <DealerQuoteBar symbol={symbol} />
+      <DealerResourceBar />
 
-      {/* 操作标的切换栏 */}
-      <div style={{ padding: '0 16px', marginBottom: 8 }}>
-        <p style={{ fontSize: 11, color: 'var(--m-text-3)', margin: 0 }}>
-          操作标的：<span style={{ color: 'var(--m-text)' }} className="m-mono">{symbol}</span>
-          <span style={{ marginLeft: 8 }}>现价 <span className={`m-mono ${currentQuote.change >= 0 ? 'm-up' : 'm-down'}`}>{currentQuote.price.toFixed(2)}</span></span>
-        </p>
-      </div>
-
-      {/* 资源条 */}
-      <section className="m-card" style={{ margin: '0 16px 12px', padding: '12px 14px' }}>
-        <div className="m-card-row" style={{ borderTop: 'none', padding: '4px 0' }}>
-          <span className="label">资金池</span>
-          <span className="value m-mono">{fmtMoney(cash)}</span>
-        </div>
-        <div className="m-card-row" style={{ padding: '4px 0' }}>
-          <span className="label">风险</span>
-          <span className={`value m-mono ${risk > 70 ? 'm-up' : ''}`}>{risk.toFixed(1)}%</span>
-        </div>
-      </section>
-
-      {/* 工具网格 */}
       <div className="m-tools-grid">
-        {TOOLS.map((t) => {
-          const power = powerMap[t.id];
-          const cost = costMap[t.id] || 0;
-          const blockedByLimit = (t.id === 'pump' && isUpper) || (t.id === 'press' && isLower);
-          const tooExpensive = cash < cost && cost > 0;
-          const disabled = blockedByLimit || tooExpensive;
-          return (
-            <div
-              key={t.id}
-              className="m-tool-card"
-              style={{ '--accent': t.accent, '--icon-bg': t.iconBg } as React.CSSProperties}
-            >
-              <div className="m-tool-icon" style={{ background: t.iconBg }}>
-                {t.icon}
-              </div>
-              <div className="m-tool-name">
-                <span style={{ fontSize: 14, fontWeight: 600 }}>{t.label}</span>
-                <span style={{ fontSize: 11, color: 'var(--m-text-3)', marginLeft: 6 }}>{t.cn}</span>
-              </div>
-              <div style={{ fontSize: 10, color: 'var(--m-text-3)', marginBottom: 6 }}>{t.desc}</div>
-              {/* 成本 */}
-              <div className="m-tool-cost">
-                {loading[t.id] ? (
-                  <span className="m-skel" style={{ width: 60, height: 14 }} />
-                ) : (
-                  <>
-                    <span style={{ fontSize: 11, color: 'var(--m-text-3)' }}>成本</span>
-                    <span className={`m-mono ${tooExpensive ? 'm-up' : ''}`} style={{ fontSize: 13, fontWeight: 700 }}>
-                      {fmtMoney(cost)}
-                    </span>
-                  </>
-                )}
-              </div>
-              {/* 效果 */}
-              <div style={{ fontSize: 11, color: t.accent, marginBottom: 8 }}>
-                {effectLabel(t.id, power)}
-              </div>
-              {/* Power slider */}
-              <input
-                type="range"
-                min={10}
-                max={100}
-                step={5}
-                value={power}
-                onChange={(e) => {
-                  const v = Number(e.target.value);
-                  setPowerMap((m) => ({ ...m, [t.id]: v }));
-                }}
-                onMouseUp={() => refreshCost(t.id)}
-                onTouchEnd={() => refreshCost(t.id)}
-                disabled={disabled}
-                className="m-tool-slider"
-                style={{ accentColor: t.accent }}
-              />
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--m-text-3)' }}>
-                <span>强度</span>
-                <span className="m-mono">{power}%</span>
-              </div>
-              <button
-                type="button"
-                className="m-tool-use"
-                onClick={() => onUse(t)}
-                disabled={disabled}
-                style={{
-                  marginTop: 8,
-                  background: disabled ? 'var(--m-surface-2)' : t.accent,
-                  color: disabled ? 'var(--m-text-3)' : (theme === 'light' ? '#fff' : '#0a0a0a'),
-                }}
-              >
-                {blockedByLimit ? (t.id === 'pump' ? '已涨停' : '已跌停') : tooExpensive ? '资金不足' : 'Use'}
-              </button>
-            </div>
-          );
-        })}
+        {TOOLS.map((t) => (
+          <DealerToolCard
+            key={t.id}
+            tool={t}
+            power={powerMap[t.id]}
+            preview={previewMap[t.id]}
+            cash={cash}
+            blockedByLimit={(t.id === 'pump' && isUpper) || (t.id === 'press' && isLower)}
+            theme={theme}
+            onPowerChange={onPowerChange}
+            onPowerCommit={onPowerCommit}
+            onUse={onUse}
+          />
+        ))}
       </div>
 
       {feedback && (
@@ -232,21 +303,4 @@ export default function MobileDealerTools({ symbol }: Props) {
       )}
     </div>
   );
-}
-
-function fmtMoney(n: number): string {
-  if (n >= 1e8) return `¥${(n / 1e8).toFixed(2)}亿`;
-  if (n >= 1e4) return `¥${(n / 1e4).toFixed(1)}万`;
-  return `¥${n.toFixed(0)}`;
-}
-
-function effectLabel(id: ToolType, power: number): string {
-  switch (id) {
-    case 'pump':       return `价 +${(0.3 * power).toFixed(1)}%`;
-    case 'press':      return `价 −${(0.3 * power).toFixed(1)}%`;
-    case 'distribute': return `价 −${(0.1 * power).toFixed(1)}% · 量 +`;
-    case 'accumulate': return `量 +${(0.5 * power).toFixed(0)}%`;
-    case 'wash':       return `量 +${(1.5 * power).toFixed(0)}%`;
-    case 'fake':       return '卖一挂单 ×8';
-  }
 }
