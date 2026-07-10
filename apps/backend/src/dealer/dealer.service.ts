@@ -50,17 +50,19 @@ export class DealerService {
   // ============================================================
 
   resources(matchId: string, userId: string): DealerResources {
-    const row = this.db.prepare(
-      `SELECT cash, risk_index FROM dealer_state WHERE match_id = ? AND user_id = ?`,
-    ).get(matchId, userId) as any;
+    let row = this.db.prepare(
+      `SELECT risk_index FROM dealer_state WHERE match_id = ? AND user_id = ?`,
+    ).get(matchId, userId) as { risk_index: number } | undefined;
     if (!row) {
       this.db.prepare(
         `INSERT INTO dealer_state (match_id, user_id, cash, energy, risk_index, position_qty, position_avg, freeze_until_tick)
-         VALUES (?, ?, 50000000, 0, 0, 0, 0, 0)`,
+         VALUES (?, ?, 0, 0, 0, 0, 0, 0)`,
       ).run(matchId, userId);
-      return { cash: 50_000_000, energy: 0, riskIndex: 0 };
+      row = { risk_index: 0 };
     }
-    return { cash: row.cash, energy: 0, riskIndex: row.risk_index };
+    const player = this.matchSvc.getUserMatchState(matchId, userId);
+    const cash = player?.cash ?? 100_000_000;
+    return { cash, energy: 0, riskIndex: row.risk_index };
   }
 
   onTick(matchId: string) {
@@ -75,7 +77,7 @@ export class DealerService {
   resetForMatch(matchId: string, userId: string) {
     this.db.prepare(
       `INSERT OR REPLACE INTO dealer_state (match_id, user_id, cash, energy, risk_index, position_qty, position_avg, freeze_until_tick)
-       VALUES (?, ?, 50000000, 0, 0, 0, 0, 0)`,
+       VALUES (?, ?, 0, 0, 0, 0, 0, 0)`,
     ).run(matchId, userId);
     this.insiderTips.delete(matchId);
     this.matchTicks.set(matchId, 0);
@@ -97,6 +99,9 @@ export class DealerService {
     const power = Math.max(1, Math.min(100, Math.floor(body.power ?? 50)));
 
     const r = this.resources(matchId, userId);
+    const playerState = this.matchSvc.getUserMatchState(matchId, userId);
+    if (!playerState) return Fail('用户未在该对局', 404);
+    const playerCash = playerState.cash;
     const quote = this.engine.getQuote(symbol);
     if (!quote) return Fail(`未知标的 ${symbol}`);
     const curPrice = quote.price;
@@ -124,7 +129,7 @@ export class DealerService {
       return Fail(`已达跌停，无法出货`);
     }
 
-    if (r.cash < cost) return Fail(`资金不足: 需要 ¥${cost.toLocaleString()}，可用 ¥${r.cash.toLocaleString()}`);
+    if (playerCash < cost) return Fail(`资金不足: 需要 ¥${cost.toLocaleString()}，可用 ¥${playerCash.toLocaleString()}`);
 
     const lock = this.restrictions.isDealerToolsLocked(matchId, symbol);
     if (lock.locked) {
@@ -196,10 +201,8 @@ export class DealerService {
           const volFactor = 1 + effectPct / 100;
           this.engine.bumpVolume(symbol, volFactor);
           this.db.prepare(
-            `UPDATE dealer_state
-                SET position_qty = ?, position_avg = ?, cash = cash + ?
-              WHERE match_id = ? AND user_id = ?`,
-          )?.run(newQty, newAvg, revenue, matchId, userId);
+            `UPDATE dealer_state SET position_qty = ?, position_avg = ? WHERE match_id = ? AND user_id = ?`,
+          ).run(newQty, newAvg, matchId, userId);
         });
         txDis();
         effect = { ...effect, distributedQty: power * 100, price: curPrice, revenue, upper, lower };
@@ -220,10 +223,11 @@ export class DealerService {
     }
 
     const newRisk = Math.min(MAX_RISK, r.riskIndex + riskIncrease);
-    const newCash = r.cash - cost + revenue;
+    const newCash = playerCash - cost + revenue;
+    this.matchSvc.setUserMatchState(matchId, userId, { cash: newCash });
     this.db.prepare(
-      `UPDATE dealer_state SET cash = ?, risk_index = ? WHERE match_id = ? AND user_id = ?`,
-    ).run(newCash, newRisk, matchId, userId);
+      `UPDATE dealer_state SET risk_index = ? WHERE match_id = ? AND user_id = ?`,
+    ).run(newRisk, matchId, userId);
 
     return Ok({
       resources: { cash: newCash, energy: 0, riskIndex: newRisk },

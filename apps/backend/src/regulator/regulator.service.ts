@@ -292,15 +292,6 @@ export class RegulatorService {
         const newCash = Math.max(0, penalizedState.cash - fine);
         this.matchSvc.setUserMatchState(matchId, penalizedUserId, { cash: newCash });
       }
-      const dealerRow = this.db.prepare(
-        `SELECT cash FROM dealer_state WHERE match_id = ? AND user_id = ?`,
-      ).get(matchId, penalizedUserId) as any;
-      if (dealerRow) {
-        const newDealerCash = Math.max(0, dealerRow.cash - fine);
-        this.db.prepare(
-          `UPDATE dealer_state SET cash = ? WHERE match_id = ? AND user_id = ?`,
-        ).run(newDealerCash, matchId, penalizedUserId);
-      }
 
       if (opponentId) {
         const oppState = this.matchSvc.getUserMatchState(matchId, opponentId);

@@ -751,7 +751,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   ],
   players: initialPlayersInGame,
   leaderboard: initialPlayers,
-  dealerResources: { cash: 50000000, energy: 0, riskIndex: 0 },
+  dealerResources: { cash: STARTING_ASSETS, energy: 0, riskIndex: 0 },
   dealerInfo: null,
   insiderData: {
     revenue: '¥2.4B',
@@ -827,18 +827,17 @@ simulation: {
 
   setGameStatus: (gameStatus) => set({ gameStatus }),
 
-  setDealerInfo: (info) => set({
+  setDealerInfo: (info) => set((s) => ({
     dealerInfo: info,
-    // Keep dealerResources in sync with the resources sub-field so the tick
-    // engine can keep using the lean shape without re-reading the full object.
     dealerResources: info
       ? {
-          cash: info.resources.cash,
+          cash: info.resources.cash ?? s.cash,
           energy: info.resources.energy,
           riskIndex: info.resources.riskIndex,
         }
       : null,
-  }),
+    ...(info ? { cash: info.resources.cash ?? s.cash, playerCash: info.resources.cash ?? s.cash } : {}),
+  })),
   
   updateQuote: (quote) => set((s) => ({ currentQuote: { ...s.currentQuote, ...quote } })),
   
@@ -1185,7 +1184,7 @@ simulation: {
       bestTradePnl: 0,
       // Reset dealer resources so risk / capital don't persist across matches.
       // （已移除 energy 字段 — 庄家操作只用 cash）
-      dealerResources: { cash: 50000000, energy: 0, riskIndex: 0 },
+      dealerResources: { cash: STARTING_ASSETS, energy: 0, riskIndex: 0 },
       pendingInsiderTip: null,
       simulation: {
         ...get().simulation,
@@ -1432,9 +1431,9 @@ simulation: {
       riskIncrease = localPreview.riskIncrease;
     }
 
-    if (state.dealerResources && state.dealerResources.cash < realCost) {
-      get().showToast(`庄家资金不足: 需要 ¥${realCost.toLocaleString()}，可用 ¥${state.dealerResources.cash.toLocaleString()}`, 'warning');
-      return { success: false, error: '庄家资金不足' };
+    if (state.cash < realCost) {
+      get().showToast(`资金不足: 需要 ¥${realCost.toLocaleString()}，可用 ¥${state.cash.toLocaleString()}`, 'warning');
+      return { success: false, error: '资金不足' };
     }
 
     // ---- Backend mode: 发指令到 WS ----
@@ -1460,10 +1459,9 @@ simulation: {
     }
 
     // ---- Local mode: 本地模拟（旧路径保留） ----
-    if (!state.dealerResources) return { success: false, error: '无庄家资源' };
-    if (state.dealerResources.cash < realCost) {
-      get().showToast(`庄家资金不足: 需要 ¥${realCost.toLocaleString()}`, 'warning');
-      return { success: false, error: '庄家资金不足' };
+    if (state.cash < realCost) {
+      get().showToast(`资金不足: 需要 ¥${realCost.toLocaleString()}`, 'warning');
+      return { success: false, error: '资金不足' };
     }
 
     const intensity = power / 100;
@@ -1524,7 +1522,13 @@ simulation: {
       const sym = s.currentQuote.symbol;
       const cur = s.timelineBySymbol[sym] ?? [];
       const newTimeline = [...cur, newPrice].slice(-240);
+      const newCash = s.cash - realCost + extraCashEffect;
       const dr = s.dealerResources;
+      const positionValue = s.holdings.reduce((sum, h) => {
+        const px = h.symbol === sym ? newPrice : (s.stockPrices[h.symbol] ?? h.marketPrice ?? h.avgPrice);
+        return sum + h.shares * px;
+      }, 0);
+      const totalAssets = Math.max(0, newCash + positionValue - s.borrowed);
       return {
         currentQuote: {
           ...s.currentQuote,
@@ -1536,11 +1540,15 @@ simulation: {
         },
         stockPrices: { ...s.stockPrices, [sym]: newPrice },
         orderBook: fakeOrderBookRestore ?? s.orderBook,
+        cash: newCash,
+        playerCash: newCash,
+        totalAssets,
+        portfolioTotal: totalAssets,
         dealerResources: dr ? {
-          cash: dr.cash - realCost + extraCashEffect,
+          cash: newCash,
           energy: 0,
           riskIndex: Math.min(100, dr.riskIndex + riskIncrease),
-        } : null,
+        } : { cash: newCash, energy: 0, riskIndex: Math.min(100, riskIncrease) },
         timelineData: newTimeline,
         timelineBySymbol: { ...s.timelineBySymbol, [sym]: newTimeline },
         holdings: s.holdings.map((h) => h.symbol === sym
@@ -3347,10 +3355,24 @@ simulation: {
     console.log('[Dealer] _applyDealerResult', data);
     if (data?.resources) {
       const state = get();
+      const newCash = data.resources.cash ?? state.cash;
+      const positionValue = state.holdings.reduce((sum, h) => {
+        const px = state.stockPrices[h.symbol] ?? h.marketPrice ?? h.avgPrice ?? 0;
+        return sum + h.shares * px;
+      }, 0);
+      const totalAssets = Math.max(0, newCash + positionValue - state.borrowed);
       set({
-        dealerResources: data.resources,
+        cash: newCash,
+        playerCash: newCash,
+        totalAssets,
+        portfolioTotal: totalAssets,
+        dealerResources: {
+          cash: newCash,
+          energy: 0,
+          riskIndex: data.resources.riskIndex ?? state.dealerResources?.riskIndex ?? 0,
+        },
         dealerInfo: state.dealerInfo
-          ? { ...state.dealerInfo, resources: data.resources }
+          ? { ...state.dealerInfo, resources: { ...data.resources, cash: newCash } }
           : null,
       });
       // 庄家操作本身会给 manipulation 加分（这里粗略同步，监管实际计算在 server）

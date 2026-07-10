@@ -49,14 +49,14 @@ function buildLocalPreview(id: ToolType, symbol: string, power: number): Preview
   return { cost: p.cost, effectLabel: p.effectLabel };
 }
 
-/** 仅资金/风险条 — 只在 dealerResources 变时重渲 */
+/** 仅资金/风险条 — cash 与交易共用 player.cash */
 const DealerResourceBar = memo(function DealerResourceBar() {
-  const cash = useGameStore((s) => s.dealerResources?.cash ?? 0);
+  const cash = useGameStore((s) => s.cash);
   const risk = useGameStore((s) => s.dealerResources?.riskIndex ?? 0);
   return (
     <section className="m-card" style={{ margin: '0 16px 12px', padding: '12px 14px' }}>
       <div className="m-card-row" style={{ borderTop: 'none', padding: '4px 0' }}>
-        <span className="label">资金池</span>
+        <span className="label">可用资金</span>
         <span className="value m-mono">{formatDealerCost(cash)}</span>
       </div>
       <div className="m-card-row" style={{ padding: '4px 0' }}>
@@ -171,7 +171,7 @@ interface Props {
 }
 
 export default function MobileDealerTools({ symbol }: Props) {
-  const cash = useGameStore((s) => s.dealerResources?.cash ?? 0);
+  const cash = useGameStore((s) => s.cash);
   const executeDealerAction = useGameStore((s) => s.executeDealerAction);
   const backendMode = useGameStore((s) => s.backendMode);
   const price = useGameStore((s) => s.currentQuote.price);

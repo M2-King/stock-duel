@@ -57,7 +57,7 @@ export default function DealerPanelPage() {
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error' | 'info'; msg: string } | null>(null);
   const [flashTool, setFlashTool] = useState<ToolType | null>(null);
 
-  const cash = dealerResources?.cash ?? playerCash;
+  const cash = playerCash;
   const risk = dealerResources?.riskIndex ?? 0;
   const symbol = currentQuote.symbol;
   const stockRestriction = getStockRestriction(symbol);
@@ -215,11 +215,11 @@ export default function DealerPanelPage() {
             <div className="resource-block large">
               <div className="resource-header">
                 <span className="resource-icon">💰</span>
-                <span className="resource-label">Capital Pool</span>
+                <span className="resource-label">Cash</span>
               </div>
               <div className="resource-value mono">{formatDealerCost(cash)}</div>
               <div className="resource-bar-bg">
-                <div className="resource-bar-fill" style={{ width: `${Math.min(100, (cash / 50_000_000) * 100)}%` }}></div>
+                <div className="resource-bar-fill" style={{ width: `${Math.min(100, (cash / 100_000_000) * 100)}%` }}></div>
               </div>
             </div>
             <div className="resource-block">

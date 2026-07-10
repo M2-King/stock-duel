@@ -43,7 +43,7 @@ function resetDealer() {
   useGameStore.setState({
     gameStatus: 'playing',
     role: 'dealer',
-    dealerResources: { cash: 50_000_000, energy: 100, riskIndex: 32 },
+    dealerResources: { cash: 100_000_000, energy: 100, riskIndex: 32 },
     currentQuote: { ...useGameStore.getState().currentQuote, price: 100, prevClose: 100 },
   });
 }

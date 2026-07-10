@@ -2,7 +2,7 @@
  * 移动端首页：
  *  - 顶部 头像 + 通知 + 设置
  *  - Hero: 总资产 + 今日盈亏 + 小分时图
- *  - 庄家资金池 / 能量 / 风险指数（如果对局中）
+ *  - 庄家可用资金 / 风险指数（与交易共用 cash）
  *  - 当前对局状态 (进行中 / 倒计时)
  *  - 4 宫格快捷入口 (行情 / 交易 / 持仓 / 工具)
  *  - 全部新闻 + 市场快讯
@@ -37,9 +37,8 @@ export default function MobileHome({ onTabChange, onOpenMatch }: Props) {
 
   const todayPnl = useGameStore((s) => s.todayPnl);
   const todayPnlPercent = useGameStore((s) => s.todayPnlPercent);
-  const dealerResources = useGameStore((s) => s.dealerResources);
-  const capitalPool = dealerResources?.cash ?? 0;
-  const riskIndex = dealerResources?.riskIndex ?? 0;
+  const cash = useGameStore((s) => s.cash);
+  const riskIndex = useGameStore((s) => s.dealerResources?.riskIndex ?? 0);
 
   const currentQuote = useGameStore((s) => s.currentQuote);
   const allStocks = useGameStore((s) => s.allStocks);
@@ -175,8 +174,8 @@ export default function MobileHome({ onTabChange, onOpenMatch }: Props) {
             {role === 'dealer' && (
               <>
                 <div className="m-card-row">
-                  <span className="label">庄家资金池</span>
-                  <span className="value m-mono">¥{capitalPool.toLocaleString()}</span>
+                  <span className="label">可用资金</span>
+                  <span className="value m-mono">¥{cash.toLocaleString()}</span>
                 </div>
                 <div className="m-card-row">
                   <span className="label">风险指数</span>

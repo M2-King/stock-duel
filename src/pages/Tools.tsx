@@ -40,9 +40,9 @@ function ToolsLobby({
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error' | 'info'; msg: string } | null>(null);
   const executeDealerAction = useGameStore((s) => s.executeDealerAction);
   const startSoloMatch = useGameStore((s) => s.startSoloMatch);
-  const dealerResources = useGameStore((s) => s.dealerResources);
+  const cash = useGameStore((s) => s.cash);
   const currentSymbol = useGameStore((s) => s.currentQuote.symbol);
-  const dealerCash = dealerResources?.cash ?? 50_000_000;
+  const dealerCash = cash;
   const power = 50;
 
   const flashFeedback = (kind: 'success' | 'error' | 'info', msg: string) => {
