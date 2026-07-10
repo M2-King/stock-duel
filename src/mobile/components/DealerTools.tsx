@@ -8,7 +8,6 @@ import { memo, useCallback, useEffect, useState } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import { get } from '../../services/apiService';
 import { useTheme } from '../hooks/useTheme';
-import { usePlayerCash } from '../hooks/usePlayerCash';
 import CashBalance from './CashBalance';
 import {
   previewDealerAction,
@@ -107,7 +106,7 @@ const DealerToolCard = memo(function DealerToolCard({
   onPowerCommit,
   onUse,
 }: ToolCardProps) {
-  const cash = usePlayerCash();
+  const cash = useGameStore((s) => s.cash);
   const cost = preview.cost;
   const tooExpensive = !backendMode && cash < cost && cost > 0;
   const disabled = blockedByLimit || tooExpensive;
@@ -173,7 +172,7 @@ interface Props {
 }
 
 export default function MobileDealerTools({ symbol }: Props) {
-  const cash = usePlayerCash();
+  const cash = useGameStore((s) => s.cash);
   const executeDealerAction = useGameStore((s) => s.executeDealerAction);
   const backendMode = useGameStore((s) => s.backendMode);
   const price = useGameStore((s) => s.currentQuote.price);

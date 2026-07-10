@@ -13,7 +13,6 @@ import { useGameStore } from '../../store/gameStore';
 import MobileChart from '../components/Chart';
 import MobileDealerTools from '../components/DealerTools';
 import CashBalance from '../components/CashBalance';
-import { usePlayerCash } from '../hooks/usePlayerCash';
 import { formatMobileCash } from '../utils/formatCash';
 import type { MobileTab } from '../components/BottomNav';
 
@@ -26,7 +25,8 @@ export default function MobileTrade() {
 
   // 散户分支
   const currentQuote = useGameStore((s) => s.currentQuote);
-  const cash = usePlayerCash();
+  const cash = useGameStore((s) => s.cash);
+  const borrowed = useGameStore((s) => s.borrowed);
   const leverage = useGameStore((s) => s.leverage);
   const placeOrder = useGameStore((s) => s.placeOrder);
   const backendMode = useGameStore((s) => s.backendMode);
@@ -80,8 +80,9 @@ export default function MobileTrade() {
   );
   const positionValue = ownedShares * currentQuote.price;
   const estAmount = qty * currentQuote.price;
-  const enoughCash = cash >= estAmount;
+  const buyingPower = Math.max(0, cash * lev - borrowed);
   const enoughShares = ownedShares >= qty;
+  const enoughCash = buyingPower >= estAmount;
   const restriction = stockRestrictions[currentQuote.symbol];
 
   const confirm = () => {

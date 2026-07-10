@@ -2,12 +2,29 @@ import { useState, useEffect, useMemo } from 'react';
 import { useGameStore } from '../store/gameStore';
 import MarketChart from '../components/MarketChart';
 import { formatWan } from '../shared/tradeLimits';
+import { formatDealerCost } from '../shared/dealerFormulas';
 import './TradePanel.css';
 
 export default function TradePanel() {
-  const { currentQuote, orderBook, holdings, cash: playerCash, borrowed, leverage, setLeverage, placeOrder, purchaseInsiderInfo, gameStatus, unrealizedPnl, allStocks, watchlist, selectSymbol, toggleWatchlist, showToast, getStockRestriction } = useGameStore();
+  const currentQuote = useGameStore((s) => s.currentQuote);
+  const orderBook = useGameStore((s) => s.orderBook);
+  const holdings = useGameStore((s) => s.holdings);
+  const cash = useGameStore((s) => s.cash);
+  const borrowed = useGameStore((s) => s.borrowed);
+  const leverage = useGameStore((s) => s.leverage);
+  const setLeverage = useGameStore((s) => s.setLeverage);
+  const placeOrder = useGameStore((s) => s.placeOrder);
+  const purchaseInsiderInfo = useGameStore((s) => s.purchaseInsiderInfo);
+  const gameStatus = useGameStore((s) => s.gameStatus);
+  const unrealizedPnl = useGameStore((s) => s.unrealizedPnl);
+  const allStocks = useGameStore((s) => s.allStocks);
+  const watchlist = useGameStore((s) => s.watchlist);
+  const selectSymbol = useGameStore((s) => s.selectSymbol);
+  const toggleWatchlist = useGameStore((s) => s.toggleWatchlist);
+  const showToast = useGameStore((s) => s.showToast);
+  const getStockRestriction = useGameStore((s) => s.getStockRestriction);
   // Real available buying power = cash*leverage minus outstanding borrowed margin.
-  const buyingPower = Math.max(0, playerCash * leverage - borrowed);
+  const buyingPower = Math.max(0, cash * leverage - borrowed);
   const positionCost = holdings.reduce((s, h) => s + h.avgPrice * h.shares, 0);
   const unrealizedPct = positionCost > 0 ? (unrealizedPnl / positionCost) * 100 : 0;
   const [side] = useState<'buy' | 'sell'>('buy');
@@ -175,8 +192,12 @@ export default function TradePanel() {
           
           <div className="balance-block">
             <div>
+              <div className="balance-label">Available Cash</div>
+              <div className="balance-value mono">{formatDealerCost(cash)}</div>
+            </div>
+            <div>
               <div className="balance-label">Buying Power</div>
-              <div className="balance-value mono">${buyingPower.toLocaleString()}</div>
+              <div className="balance-value mono">¥{buyingPower.toLocaleString()}</div>
             </div>
             <div>
               <div className="balance-label">Unrealized P&L</div>
@@ -297,7 +318,7 @@ export default function TradePanel() {
             <button
               type="button"
               className="order-btn insider-btn"
-              disabled={playerCash < 2000 || gameStatus !== 'playing'}
+              disabled={cash < 2000 || gameStatus !== 'playing'}
               onClick={() => {
                 const r = purchaseInsiderInfo('manual', 2000);
                 if (r.success) {
@@ -313,8 +334,8 @@ export default function TradePanel() {
               style={{
                 width: '100%',
                 padding: '10px 12px',
-                background: playerCash < 2000 || gameStatus !== 'playing' ? 'var(--bg-tertiary)' : 'var(--bg-elevated)',
-                color: playerCash < 2000 || gameStatus !== 'playing' ? 'var(--text-tertiary)' : 'var(--text-primary)',
+                background: cash < 2000 || gameStatus !== 'playing' ? 'var(--bg-tertiary)' : 'var(--bg-elevated)',
+                color: cash < 2000 || gameStatus !== 'playing' ? 'var(--text-tertiary)' : 'var(--text-primary)',
                 border: '1px solid var(--border-color)',
                 borderRadius: 6,
                 fontSize: 13,
@@ -324,7 +345,7 @@ export default function TradePanel() {
             >
               {gameStatus !== 'playing'
                 ? '非交易时段'
-                : playerCash < 2000
+                : cash < 2000
                   ? '余额不足'
                   : 'Purchase Insider Info ($2,000)'}
             </button>

@@ -614,6 +614,30 @@ const initialPlayers: Player[] = [
 // IMPORTANT: starting assets must match simulation.initialAssets (1亿) for the player whose role matches.
 // Otherwise the settlement ranking shows a phantom "loss" at game start.
 const STARTING_ASSETS = 100000000;
+
+/** 唯一 cash 写入点 — 同步 cash / playerCash / dealerResources / dealerInfo */
+function cashSyncPatch(
+  state: Pick<GameState, 'dealerResources' | 'dealerInfo'>,
+  cash: number,
+  opts?: { riskIndex?: number },
+): Pick<GameState, 'cash' | 'playerCash' | 'dealerResources' | 'dealerInfo'> {
+  const riskIndex = opts?.riskIndex ?? state.dealerResources?.riskIndex ?? 0;
+  const dealerResources: DealerResources | null = state.dealerResources
+    ? { cash, energy: 0, riskIndex }
+    : null;
+  const dealerInfo: DealerInfo | null = state.dealerInfo
+    ? {
+        ...state.dealerInfo,
+        resources: {
+          ...state.dealerInfo.resources,
+          cash,
+          energy: 0,
+          riskIndex,
+        },
+      }
+    : null;
+  return { cash, playerCash: cash, dealerResources, dealerInfo };
+}
 const initialPlayersInGame: Player[] = [
   { id: 'p1', name: 'Market Maker', rank: 0, totalAssets: STARTING_ASSETS, weeklyReturn: 0, role: 'dealer' },
   { id: 'p2', name: 'Retail Investor', rank: 0, totalAssets: STARTING_ASSETS, weeklyReturn: 0, role: 'retail' },
@@ -860,16 +884,17 @@ simulation: {
 
   setGameStatus: (gameStatus) => set({ gameStatus }),
 
-  setDealerInfo: (info) => set((s) => ({
-    dealerInfo: info,
-    dealerResources: info
-      ? {
-          cash: s.cash,
-          energy: info.resources.energy,
-          riskIndex: info.resources.riskIndex,
-        }
-      : null,
-  })),
+  setDealerInfo: (info) => set((s) => {
+    if (!info) return { dealerInfo: null, dealerResources: null };
+    const patched = cashSyncPatch(s, s.cash, { riskIndex: info.resources.riskIndex });
+    return {
+      ...patched,
+      dealerInfo: {
+        ...info,
+        resources: { ...info.resources, cash: s.cash, energy: 0 },
+      },
+    };
+  }),
   
   updateQuote: (quote) => set((s) => ({ currentQuote: { ...s.currentQuote, ...quote } })),
   
@@ -1053,8 +1078,7 @@ simulation: {
       const prevDaily = s.stockDailyTraded[dailyKey] ?? 0;
       return {
         orderHistory,
-        cash,
-        playerCash: cash,
+        ...cashSyncPatch(s, cash),
         borrowed,
         holdings,
         unrealizedPnl,
@@ -1119,8 +1143,7 @@ simulation: {
       const positionValue = holdings.reduce((sum, hh) => sum + hh.marketPrice * hh.shares, 0);
       const portfolioTotal = cash + positionValue - borrowed;
       return {
-        cash,
-        playerCash: cash,
+        ...cashSyncPatch(s, cash),
         borrowed,
         holdings,
         portfolioTotal,
@@ -1331,8 +1354,7 @@ simulation: {
           ? Math.floor(positionValue * 0.3)
           : Math.floor(state.totalAssets * 0.1);
         set((s) => ({
-          cash: Math.max(0, s.cash - fine),
-          playerCash: Math.max(0, s.cash - fine),
+          ...cashSyncPatch(s, Math.max(0, s.cash - fine)),
           alerts: s.alerts.filter((a) => a.id !== alertId),
           gameStatus: 'settlement',
         }));
@@ -1431,7 +1453,7 @@ simulation: {
       riskIncrease = localPreview.riskIncrease;
     }
 
-    if (!state.backendMode && state.cash < realCost) {
+    if (state.cash < realCost) {
       get().showToast(`资金不足: 需要 ¥${realCost.toLocaleString()}，可用 ¥${state.cash.toLocaleString()}`, 'warning');
       return { success: false, error: '资金不足' };
     }
@@ -1458,12 +1480,7 @@ simulation: {
       }
     }
 
-    // ---- Local mode: 本地模拟（旧路径保留） ----
-    if (state.cash < realCost) {
-      get().showToast(`资金不足: 需要 ¥${realCost.toLocaleString()}`, 'warning');
-      return { success: false, error: '资金不足' };
-    }
-
+    // ---- Local mode: 本地模拟（离线练习） ----
     const intensity = power / 100;
     let newPrice = state.currentQuote.price;
     let newVolume = state.currentQuote.volume;
@@ -1529,6 +1546,7 @@ simulation: {
         return sum + h.shares * px;
       }, 0);
       const totalAssets = Math.max(0, newCash + positionValue - s.borrowed);
+      const nextRisk = Math.min(100, (dr?.riskIndex ?? 0) + riskIncrease);
       return {
         currentQuote: {
           ...s.currentQuote,
@@ -1540,15 +1558,9 @@ simulation: {
         },
         stockPrices: { ...s.stockPrices, [sym]: newPrice },
         orderBook: fakeOrderBookRestore ?? s.orderBook,
-        cash: newCash,
-        playerCash: newCash,
+        ...cashSyncPatch(s, newCash, { riskIndex: nextRisk }),
         totalAssets,
         portfolioTotal: totalAssets,
-        dealerResources: dr ? {
-          cash: newCash,
-          energy: 0,
-          riskIndex: Math.min(100, dr.riskIndex + riskIncrease),
-        } : { cash: newCash, energy: 0, riskIndex: Math.min(100, riskIncrease) },
         timelineData: newTimeline,
         timelineBySymbol: { ...s.timelineBySymbol, [sym]: newTimeline },
         holdings: s.holdings.map((h) => h.symbol === sym
@@ -1671,8 +1683,7 @@ simulation: {
         : Math.min(100, state.regulatoryScores.misinformation + 4),
     };
     set({
-      cash: nextCash,
-      playerCash: nextCash,
+      ...cashSyncPatch(state, nextCash),
       regulatoryScores: nextScores,
       scores: {
         manipulation: nextScores.manipulation,
@@ -3165,7 +3176,7 @@ simulation: {
       orderBook: activeOrderBook ?? state.orderBook,
       totalAssets,
       portfolioTotal: totalAssets,
-      playerCash: state.cash,
+      ...cashSyncPatch(state, state.cash),
       timelineData,
       timelineBySymbol,
     });
@@ -3192,9 +3203,9 @@ simulation: {
       return sum + h.shares * px;
     }, 0) - borrowed);
     const dr = dealerResources ?? state.dealerResources;
+    const riskIndex = dealerResources?.riskIndex ?? dr?.riskIndex ?? 0;
     set({
-      cash,
-      playerCash: cash,
+      ...cashSyncPatch(state, cash, { riskIndex }),
       borrowed,
       holdings,
       totalAssets,
@@ -3203,19 +3214,6 @@ simulation: {
       todayPnl: portfolio.todayPnl ?? state.todayPnl,
       todayPnlPercent: portfolio.todayPnlPercent ?? state.todayPnlPercent,
       leverage: portfolio.leverage ?? state.leverage,
-      dealerResources: dr
-        ? { cash, energy: dr.energy ?? 0, riskIndex: dr.riskIndex ?? 0 }
-        : { cash, energy: 0, riskIndex: 0 },
-      dealerInfo: state.dealerInfo
-        ? {
-            ...state.dealerInfo,
-            resources: {
-              cash,
-              energy: dr?.energy ?? state.dealerInfo.resources.energy,
-              riskIndex: dr?.riskIndex ?? state.dealerInfo.resources.riskIndex,
-            },
-          }
-        : state.dealerInfo,
     });
   },
 
@@ -3260,11 +3258,7 @@ simulation: {
       get()._syncPortfolioFromServer(snap.portfolio, snap.dealerResources ?? null);
     } else if (typeof snap.dealerResources?.cash === 'number') {
       const cash = snap.dealerResources.cash;
-      set({
-        cash,
-        playerCash: cash,
-        dealerResources: snap.dealerResources,
-      });
+      set(cashSyncPatch(get(), cash, { riskIndex: snap.dealerResources.riskIndex }));
     }
 
     if (isOffline) {
@@ -3407,18 +3401,9 @@ simulation: {
         return sum + h.shares * px;
       }, 0) - state.borrowed);
       set({
-        cash,
-        playerCash: cash,
+        ...cashSyncPatch(state, cash, { riskIndex: data.resources.riskIndex ?? state.dealerResources?.riskIndex }),
         totalAssets,
         portfolioTotal: totalAssets,
-        dealerResources: {
-          cash,
-          energy: 0,
-          riskIndex: data.resources.riskIndex ?? state.dealerResources?.riskIndex ?? 0,
-        },
-        dealerInfo: state.dealerInfo
-          ? { ...state.dealerInfo, resources: { ...data.resources, cash } }
-          : null,
       });
     }
     if (data?.resources) {
@@ -3547,7 +3532,7 @@ simulation: {
       get().stopSimulation();
     } else if (opponentId === state.userId) {
       get().showToast('对手被监管踢出，你获胜', 'success');
-      set({ gameStatus: 'settlement', cash: state.cash + fine, playerCash: state.cash + fine });
+      set({ gameStatus: 'settlement', ...cashSyncPatch(state, state.cash + fine) });
       get().stopSimulation();
     }
   },
