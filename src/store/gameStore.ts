@@ -3198,44 +3198,52 @@ simulation: {
   },
 
   /**
-   * 加入对局前统一重置 cash 相关字段为同一个值（默认 0）。
+   * 加入对局前清掉属于上一局的衍生数据。
    *
-   * 解决的问题：
-   *   加入对局时 WS 还没拿到 snapshot，store 里的 cash 是上一局 / 默认值。
-   *   在 Tools 页和 Trade 页切换的瞬间，两边可能因为缓存/订阅时序显示出
-   *   不一致的旧值 — 用户会以为"资金变了两份"。
+   * 重要：这里**不清 cash / playerCash / borrowed / totalAssets / portfolioTotal**。
+   *   如果 snapshot 到达前 _applyServerSnapshot 没把 cash 写回来（断网 / 后端 bug），
+   *   前端仍能显示上一个值或初始值 100_000_000，不会闪 0 再变真值。
+   *   snapshot 到了之后 _syncPortfolioFromServer 会用 backend 真值覆盖。
    *
-   * 解决：
-   *   进对局瞬间把所有 cash 字段统一重置为 0，这样 snapshot 没到的时候
-   *   Tools / Trade / Home / Profile 全部显示 0（一致），snapshot 到了再覆盖。
+   * 只清掉会污染新对局的数据：
+   *   - holdings / orderHistory / stockDailyTraded 属于上一局
+   *   - todayPnl / todayPnlPercent / unrealizedPnl 是上一局的盈亏
+   *   - dealerResources 的 riskIndex / energy 归零（新对局风险重新累计）
    *
    * 调用点：
-   *   - _joinBackendMatch() — 任何 backend 模式加入对局前
-   *   - startOfflinePractice() — offline 模式开始前（防御性，避免上一局残留）
+   *   - _joinBackendMatch() — backend 模式加入对局前
    */
   _resetCashForMatchEntry: () => {
     const state = get();
+    // 注意：cash / playerCash / borrowed / totalAssets / portfolioTotal / todayPnl
+    //   都不在这里 reset。如果 snapshot 到达前 _applyServerSnapshot 没把 cash 写回来
+    //   （网络断开/后端 bug），前端仍能显示上一个值 / 初始值，不会变 0 误导用户。
+    //   snapshot 到了之后 _syncPortfolioFromServer 会用 backend 真值覆盖。
+    //
+    // 这里只清掉会污染新对局的数据：
+    //   - holdings / orderHistory / stockDailyTraded 属于上一局
+    //   - todayPnl / todayPnlPercent / unrealizedPnl 是上一局的盈亏
     set({
-      cash: 0,
-      playerCash: 0,
-      borrowed: 0,
-      totalAssets: 0,
-      portfolioTotal: 0,
       todayPnl: 0,
       todayPnlPercent: 0,
       unrealizedPnl: 0,
       holdings: [],
       orderHistory: [],
       stockDailyTraded: {},
-      // 庄家资源重置：cash=0, riskIndex=0, energy=0 (已废弃但保持字段存在)
-      dealerResources: { cash: 0, energy: 0, riskIndex: 0 },
+      // 庄家资源 reset：riskIndex/energy 归零，但 cash 保留，由 snapshot 覆盖
+      dealerResources: { cash: state.cash, energy: 0, riskIndex: 0 },
       dealerInfo: state.dealerInfo
         ? {
             ...state.dealerInfo,
-            resources: { cash: 0, energy: 0, riskIndex: 0 },
+            resources: {
+              ...state.dealerInfo.resources,
+              cash: state.cash,
+              energy: 0,
+              riskIndex: 0,
+            },
           }
         : {
-            resources: { cash: 0, energy: 0, riskIndex: 0 },
+            resources: { cash: state.cash, energy: 0, riskIndex: 0 },
             hiddenInfo: null,
           },
     });
