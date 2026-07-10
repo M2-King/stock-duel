@@ -26,6 +26,7 @@ export default function MobileTrade() {
   const cash = useGameStore((s) => s.cash);
   const leverage = useGameStore((s) => s.leverage);
   const placeOrder = useGameStore((s) => s.placeOrder);
+  const backendMode = useGameStore((s) => s.backendMode);
   const setLeverage = useGameStore((s) => s.setLeverage);
   const showToast = useGameStore((s) => s.showToast);
   const holdings = useGameStore((s) => s.holdings);
@@ -106,9 +107,9 @@ export default function MobileTrade() {
       status: 'filled',
       leverage: lev,
     });
-    if (r?.success) {
+    if (r?.success && !backendMode) {
       showToast(`${side === 'buy' ? '买入' : '卖出'}成功 ${qty} 股 @ ¥${currentQuote.price.toFixed(2)}`, 'success');
-    } else {
+    } else if (!r?.success) {
       showToast(r?.error || '下单失败', 'danger');
     }
   };

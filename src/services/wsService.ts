@@ -27,7 +27,7 @@
  *   regulator:freeze  (S→C) { symbol, maxSingle, maxDaily, expiresTick, restrictionType, ... }
  *   regulator:warn    (S→C) { symbol, maxSingle, maxDaily, expiresTick, restrictionType, ... }
  *   regulator:kick    (S→C) { penalizedUserId, fine, symbol, ... }
- *   match:snapshot    (S→C) { matchId, role, symbol, quote, klines, orderBook, indicators }
+ *   match:snapshot    (S→C) { matchId, role, symbol, quote, klines, orderBook, indicators, portfolio?, dealerResources? }
  *   match:peer-join   (S→C) { userId, role }
  *   match:peer-leave  (S→C) { userId }
  *   peer:trade        (S→C) { userId, side, symbol }

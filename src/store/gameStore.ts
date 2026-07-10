@@ -398,7 +398,40 @@ interface GameState {
     quotes?: Record<string, any>;
     orderBooks?: Record<string, any>;
   }) => void;
-  _applyServerSnapshot: (snap: { matchId: string; role: string; symbol: string; quote: any; klines: any[]; orderBook: any; indicators: any; timeline?: any[]; currentDay?: number; currentTick?: number; session?: string }) => void;
+  _syncPortfolioFromServer: (portfolio: {
+    cash: number;
+    borrowed?: number;
+    holdings?: Holding[];
+    totalAssets?: number;
+    unrealizedPnl?: number;
+    todayPnl?: number;
+    todayPnlPercent?: number;
+    leverage?: number;
+  }, dealerResources?: { cash?: number; energy?: number; riskIndex?: number } | null) => void;
+  _applyServerSnapshot: (snap: {
+    matchId: string;
+    role: string;
+    symbol: string;
+    quote: any;
+    klines: any[];
+    orderBook: any;
+    indicators: any;
+    timeline?: any[];
+    currentDay?: number;
+    currentTick?: number;
+    session?: string;
+    portfolio?: {
+      cash: number;
+      borrowed?: number;
+      holdings?: Holding[];
+      totalAssets?: number;
+      unrealizedPnl?: number;
+      todayPnl?: number;
+      todayPnlPercent?: number;
+      leverage?: number;
+    } | null;
+    dealerResources?: { cash: number; energy: number; riskIndex: number } | null;
+  }) => void;
   _applyServerNews: (news: any) => void;
   _applyServerBlackSwan: (payload: { symbol: string; newPrice: number; label: string; multiplier: number }) => void;
   _applyServerMarketUpdate: (payload: { symbol: string; quote: any; klines: any[]; orderBook: any; indicators: any; timeline: any[] }) => void;
@@ -926,38 +959,6 @@ simulation: {
           get().showToast(`下单失败: WS 未就绪 (${(err as Error).message})`, 'danger');
         }
       })();
-      // 乐观本地预占持仓/扣现金 — UI 立即响应
-      // （真正的 server 回执到位时 _applyTradeResult 会覆盖）
-      set((s) => {
-        let cash = s.cash;
-        let borrowed = s.borrowed;
-        let holdings = s.holdings;
-        if (order.side === 'buy') {
-          const amount = order.price * order.quantity;
-          const fromCash = Math.min(s.cash, amount);
-          cash = s.cash - fromCash;
-          borrowed = s.borrowed + (amount - fromCash);
-          const idx = holdings.findIndex(h => h.symbol === order.symbol);
-          if (idx >= 0) {
-            const h = holdings[idx];
-            const totalShares = h.shares + order.quantity;
-            const totalCost = h.avgPrice * h.shares + order.price * order.quantity;
-            const avgPrice = totalCost / totalShares;
-            holdings = holdings.map((hh, i) => i === idx ? { ...hh, shares: totalShares, avgPrice, marketPrice: order.price } : hh);
-          } else {
-            holdings = [...holdings, { symbol: order.symbol, shares: order.quantity, avgPrice: order.price, marketPrice: order.price, pnl: 0, pnlPercent: 0, sector: 'Other' }];
-          }
-        } else {
-          const amount = order.price * order.quantity;
-          const repay = Math.min(s.borrowed, amount);
-          borrowed = s.borrowed - repay;
-          cash = s.cash + (amount - repay);
-          holdings = s.holdings
-            .map(h => h.symbol === order.symbol ? { ...h, shares: h.shares - order.quantity, marketPrice: order.price } : h)
-            .filter(h => h.shares > 0);
-        }
-        return { cash, playerCash: cash, borrowed, holdings };
-      });
       return { success: true };
     }
 
@@ -1431,12 +1432,12 @@ simulation: {
       riskIncrease = localPreview.riskIncrease;
     }
 
-    if (state.cash < realCost) {
+    if (!state.backendMode && state.cash < realCost) {
       get().showToast(`资金不足: 需要 ¥${realCost.toLocaleString()}，可用 ¥${state.cash.toLocaleString()}`, 'warning');
       return { success: false, error: '资金不足' };
     }
 
-    // ---- Backend mode: 发指令到 WS ----
+    // ---- Backend mode: 发指令到 WS，cash 由 dealer:result 回填 ----
     if (state.backendMode) {
       if (!state.matchId) {
         get().showToast('尚未加入对局', 'warning');
@@ -3179,6 +3180,47 @@ simulation: {
   },
 
   /**
+   * 用后端 portfolio 覆盖本地 cash / 持仓 — 不做前端推算。
+   */
+  _syncPortfolioFromServer: (portfolio, dealerResources) => {
+    if (!portfolio || typeof portfolio.cash !== 'number') return;
+    const state = get();
+    const cash = portfolio.cash;
+    const borrowed = portfolio.borrowed ?? state.borrowed;
+    const holdings = portfolio.holdings ?? state.holdings;
+    const totalAssets = portfolio.totalAssets ?? Math.max(0, cash + holdings.reduce((sum, h) => {
+      const px = h.marketPrice ?? h.avgPrice ?? 0;
+      return sum + h.shares * px;
+    }, 0) - borrowed);
+    const dr = dealerResources ?? state.dealerResources;
+    set({
+      cash,
+      playerCash: cash,
+      borrowed,
+      holdings,
+      totalAssets,
+      portfolioTotal: totalAssets,
+      unrealizedPnl: portfolio.unrealizedPnl ?? state.unrealizedPnl,
+      todayPnl: portfolio.todayPnl ?? state.todayPnl,
+      todayPnlPercent: portfolio.todayPnlPercent ?? state.todayPnlPercent,
+      leverage: portfolio.leverage ?? state.leverage,
+      dealerResources: dr
+        ? { cash, energy: dr.energy ?? 0, riskIndex: dr.riskIndex ?? 0 }
+        : state.dealerResources,
+      dealerInfo: state.dealerInfo
+        ? {
+            ...state.dealerInfo,
+            resources: {
+              cash,
+              energy: dr?.energy ?? state.dealerInfo.resources.energy,
+              riskIndex: dr?.riskIndex ?? state.dealerInfo.resources.riskIndex,
+            },
+          }
+        : state.dealerInfo,
+    });
+  },
+
+  /**
    * server match:snapshot — 对局刚 join 上时给的全量。
    * 覆盖当前 quote / klines / orderBook / indicators，并把 role 写回 store。
    */
@@ -3214,6 +3256,17 @@ simulation: {
       ...(typeof snap.currentDay === 'number' ? { currentDay: snap.currentDay } : {}),
       ...(typeof snap.currentTick === 'number' ? { currentTick: snap.currentTick } : {}),
     });
+
+    if (snap.portfolio) {
+      get()._syncPortfolioFromServer(snap.portfolio, snap.dealerResources ?? null);
+    } else if (typeof snap.dealerResources?.cash === 'number') {
+      const cash = snap.dealerResources.cash;
+      set({
+        cash,
+        playerCash: cash,
+        dealerResources: snap.dealerResources,
+      });
+    }
 
     if (isOffline) {
       console.log('[snapshot] offline flow → playing directly');
@@ -3312,34 +3365,25 @@ simulation: {
       return;
     }
     const { side, data } = payload;
-    // 后端返回的 data 形如 { orderId, portfolio: { cash, holdings, borrowed, totalAssets, ... } }
     if (!data?.portfolio) {
-      // 兜底：若后端没返 portfolio，按 orderId 简单记录
       get().showToast(`${side === 'buy' ? '买入' : '卖出'} 成功`, 'success');
       return;
     }
-    const { cash, holdings, borrowed, totalAssets } = data.portfolio;
     const state = get();
-    // 合成一个 OrderRecord 入 history（symbol/price/qty 从 store 当前选中推算）
+    get()._syncPortfolioFromServer(data.portfolio);
     const lastOrder: OrderRecord = {
       id: data.orderId ?? `srv_${Date.now()}`,
       symbol: state.currentQuote.symbol,
       type: 'market',
       side: side,
       price: state.currentQuote.price,
-      quantity: 0, // 具体数量本端没记录，UI 上允许显示 '—'
+      quantity: data.quantity ?? 0,
       status: 'filled',
       timestamp: Date.now(),
     };
     set({
-      cash,
-      playerCash: cash,
-      borrowed: borrowed ?? state.borrowed,
-      holdings: holdings ?? state.holdings,
-      totalAssets: totalAssets ?? state.totalAssets,
-      portfolioTotal: totalAssets ?? state.portfolioTotal,
-      orderHistory: [lastOrder, ...state.orderHistory].slice(0, 100),
-      totalTradeCount: state.totalTradeCount + 1,
+      orderHistory: [lastOrder, ...get().orderHistory].slice(0, 100),
+      totalTradeCount: get().totalTradeCount + 1,
     });
     get().showToast(`${side === 'buy' ? '买入' : '卖出'} 成功`, 'success');
   },
@@ -3353,29 +3397,33 @@ simulation: {
     }
     const { data } = payload;
     console.log('[Dealer] _applyDealerResult', data);
-    if (data?.resources) {
+    if (data?.portfolio) {
+      get()._syncPortfolioFromServer(data.portfolio, data.resources ?? null);
+    } else if (data?.resources && typeof data.resources.cash === 'number') {
       const state = get();
-      const newCash = data.resources.cash ?? state.cash;
-      const positionValue = state.holdings.reduce((sum, h) => {
+      const cash = data.resources.cash;
+      const holdings = state.holdings;
+      const totalAssets = Math.max(0, cash + holdings.reduce((sum, h) => {
         const px = state.stockPrices[h.symbol] ?? h.marketPrice ?? h.avgPrice ?? 0;
         return sum + h.shares * px;
-      }, 0);
-      const totalAssets = Math.max(0, newCash + positionValue - state.borrowed);
+      }, 0) - state.borrowed);
       set({
-        cash: newCash,
-        playerCash: newCash,
+        cash,
+        playerCash: cash,
         totalAssets,
         portfolioTotal: totalAssets,
         dealerResources: {
-          cash: newCash,
+          cash,
           energy: 0,
           riskIndex: data.resources.riskIndex ?? state.dealerResources?.riskIndex ?? 0,
         },
         dealerInfo: state.dealerInfo
-          ? { ...state.dealerInfo, resources: { ...data.resources, cash: newCash } }
+          ? { ...state.dealerInfo, resources: { ...data.resources, cash } }
           : null,
       });
-      // 庄家操作本身会给 manipulation 加分（这里粗略同步，监管实际计算在 server）
+    }
+    if (data?.resources) {
+      const state = get();
       const delta = (data.resources.riskIndex ?? 0) - (state.dealerResources?.riskIndex ?? 0);
       if (delta > 0) get().adjustScores({ manipulation: delta });
     }

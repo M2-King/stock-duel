@@ -207,9 +207,13 @@ export class GameGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     this.matches.handlePlayerConnect(data.matchId, session.userId);
     // 通知对手（如果有别的 session 也连着）
     socket.to(`match:${data.matchId}`).emit('match:peer-join', { userId: session.userId, role });
-    // 同步对局当前完整行情
-    const player = this.matches.getPlayers(data.matchId);
-    const symbol = player ? 'QDN' : 'QDN'; // 简化：主 symbol 固定 QDN
+    // 同步对局当前完整行情 + 玩家资产（cash 以后端为准）
+    const symbol = 'QDN';
+    const portfolioRes = this.trading.portfolio(data.matchId, session.userId);
+    const portfolio = portfolioRes.code === 0 ? portfolioRes.data : null;
+    const dealerResources = role === 'dealer'
+      ? this.dealer.resources(data.matchId, session.userId)
+      : undefined;
     socket.emit('match:snapshot', {
       matchId: data.matchId,
       role,
@@ -221,6 +225,8 @@ export class GameGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       currentDay: 1,
       currentTick: 0,
       session: 'morning',
+      portfolio,
+      dealerResources,
     });
     return { ok: true, role };
   }
@@ -276,6 +282,12 @@ export class GameGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       return;
     }
     const res = await this.dealer.action({ ...data, userId: session.userId });
+    if (res.code === 0 && data?.matchId) {
+      const portfolioRes = this.trading.portfolio(data.matchId, session.userId);
+      if (portfolioRes.code === 0 && res.data) {
+        (res as any).data = { ...res.data, portfolio: portfolioRes.data };
+      }
+    }
     socket.emit('dealer:result', res);
     if (data.matchId) socket.to(`match:${data.matchId}`).emit('peer:dealer', { userId: session.userId, ...res });
   }

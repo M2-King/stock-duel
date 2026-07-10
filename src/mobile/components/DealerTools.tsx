@@ -88,6 +88,7 @@ interface ToolCardProps {
   power: number;
   preview: Preview;
   cash: number;
+  backendMode: boolean;
   blockedByLimit: boolean;
   theme: 'light' | 'dark';
   onPowerChange: (id: ToolType, v: number) => void;
@@ -100,6 +101,7 @@ const DealerToolCard = memo(function DealerToolCard({
   power,
   preview,
   cash,
+  backendMode,
   blockedByLimit,
   theme,
   onPowerChange,
@@ -107,7 +109,7 @@ const DealerToolCard = memo(function DealerToolCard({
   onUse,
 }: ToolCardProps) {
   const cost = preview.cost;
-  const tooExpensive = cash < cost && cost > 0;
+  const tooExpensive = !backendMode && cash < cost && cost > 0;
   const disabled = blockedByLimit || tooExpensive;
 
   return (
@@ -241,20 +243,22 @@ export default function MobileDealerTools({ symbol }: Props) {
       setTimeout(() => setFeedback(null), 1500);
       return;
     }
-    if (cash < cost) {
+    if (!backendMode && cash < cost) {
       setFeedback({ kind: 'error', msg: `资金不足：需要 ${formatDealerCost(cost)}` });
       setTimeout(() => setFeedback(null), 1500);
       return;
     }
     const r = await Promise.resolve(executeDealerAction({ type: tool.id, power, cost }));
     if (r?.success) {
-      setFeedback({ kind: 'success', msg: `${tool.cn} 成功 — ${formatDealerCost(cost)}` });
-      refreshPreview(tool.id, power);
+      if (!backendMode) {
+        setFeedback({ kind: 'success', msg: `${tool.cn} 成功 — ${formatDealerCost(cost)}` });
+        refreshPreview(tool.id, power);
+      }
     } else {
       setFeedback({ kind: 'error', msg: r?.error || '执行失败' });
     }
     setTimeout(() => setFeedback(null), 1800);
-  }, [powerMap, previewMap, isUpper, isLower, cash, executeDealerAction, refreshPreview]);
+  }, [powerMap, previewMap, isUpper, isLower, cash, backendMode, executeDealerAction, refreshPreview]);
 
   return (
     <div className="m-dealer-tools">
@@ -270,6 +274,7 @@ export default function MobileDealerTools({ symbol }: Props) {
             power={powerMap[t.id]}
             preview={previewMap[t.id]}
             cash={cash}
+            backendMode={backendMode}
             blockedByLimit={(t.id === 'pump' && isUpper) || (t.id === 'press' && isLower)}
             theme={theme}
             onPowerChange={onPowerChange}
