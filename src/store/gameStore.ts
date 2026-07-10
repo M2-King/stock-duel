@@ -2189,6 +2189,19 @@ simulation: {
 
   enterPlaying: () => {
     get().resetGameSession();
+    const state = get();
+    // 离线开局：为当前标的种子一个分时起点，避免空数组导致图表假直线
+    if (!usesBackendGameState(state)) {
+      const sym = state.currentQuote.symbol;
+      const px = state.currentQuote.price;
+      if (px > 0 && !(state.timelineBySymbol[sym]?.length)) {
+        const seed = [px];
+        set({
+          timelineBySymbol: { ...state.timelineBySymbol, [sym]: seed },
+          timelineData: seed,
+        });
+      }
+    }
     set({ gameStatus: 'playing' });
     const st = get();
     if (usesBackendGameState(st) && st.matchId) {
@@ -2504,11 +2517,10 @@ simulation: {
     // 每 50 次打一次心跳，避免 console flood
     if (!get().simulation._tickLogCount) get().simulation._tickLogCount = 0;
     const lc = get().simulation._tickLogCount as number;
-    if (lc % 30 === 0) console.log('[processTick] tick#' + state.currentTick + ' backend=' + state.backendMode + ' price=' + state.currentQuote.price);
-    // Backend mode: 价格由 server market:tick 驱动（见 _applyServerTick）。
-    // 但当前 all-in-one 的 processTick 也负责 tick 计数 / 时钟 / 午休 / 收盘。
-    // 我们分开做：backend mode 只推进“时间/日程/结算”等，不再对 prices 做额外 GBM。
-    const isBackend = state.backendMode;
+    if (lc % 30 === 0) console.log('[processTick] tick#' + state.currentTick + ' backendGame=' + usesBackendGameState(state) + ' price=' + state.currentQuote.price);
+    // 在线对局：价格由 server market:tick 驱动（见 _applyServerTick）。
+    // 离线练习 / 纯本地：即使 backendMode=true 也走本地 GBM。
+    const isBackend = usesBackendGameState(state);
 
     // 1) 价格
     //    - local mode：由本地 GBM 驱动（包括 holdings 里的其它 symbol）
@@ -2578,7 +2590,7 @@ simulation: {
       );
       tlNext = tlBySymbolNext[sym2] ?? [];
     } else {
-      // 后端模式：游戏 tick 追加新点；盘内 200ms 行情在 _applyServerTick 里 patch 末点
+      // 在线对局：游戏 tick 追加新点；盘内 200ms 行情在 _applyServerTick 里 patch 末点
       tlBySymbolNext = appendTimelineGameTick(
         state.timelineBySymbol,
         nextStockPrices,
@@ -3183,6 +3195,10 @@ simulation: {
    */
   _applyServerTick: (payload) => {
     const state = get();
+    // 离线练习进行中：价格/timeline 由本地 processTick GBM 驱动，勿用公共行情覆盖
+    if (state.gameStatus === 'playing' && !usesBackendGameState(state)) {
+      return;
+    }
     // 兼容两种 payload：
     //   1) { symbol, quote, orderBook }                 （旧）
     //   2) { quotes: { [sym]: Quote }, orderBooks }  （新，全量）
