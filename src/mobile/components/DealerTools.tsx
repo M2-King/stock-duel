@@ -5,7 +5,7 @@
  */
 
 import { memo, useCallback, useEffect, useState } from 'react';
-import { useGameStore } from '../../store/gameStore';
+import { useGameStore, usesBackendGameState } from '../../store/gameStore';
 import { useDealerResources, useCashBalance } from '../../hooks/useCashBalance';
 import { get } from '../../services/apiService';
 import { useTheme } from '../hooks/useTheme';
@@ -76,7 +76,7 @@ const DealerResourceBar = memo(function DealerResourceBar() {
       </div>
       {cash < 1_000_000 && totalAssets > cash + 1_000_000 && (
         <p style={{ fontSize: 10, color: 'var(--m-text-3)', margin: '6px 0 0', lineHeight: 1.45 }}>
-          操盘工具只消耗现金。若总资产充足但现金不足，请先在交易页卖出持股变现。
+          交易与操盘共用同一笔现金。卖出股票后回款会立即计入可用现金，可直接用于拉升等工具。
         </p>
       )}
     </section>
@@ -189,7 +189,7 @@ interface Props {
 export default function MobileDealerTools({ symbol }: Props) {
   const { cash } = useDealerResources();
   const executeDealerAction = useGameStore((s) => s.executeDealerAction);
-  const backendMode = useGameStore((s) => s.backendMode);
+  const backendGame = useGameStore((s) => usesBackendGameState(s));
   const price = useGameStore((s) => s.currentQuote.price);
   const prevClose = useGameStore((s) => s.currentQuote.prevClose || s.currentQuote.price);
   const { theme } = useTheme();
@@ -211,13 +211,13 @@ export default function MobileDealerTools({ symbol }: Props) {
 
   // 打开操盘面板时从后端拉真值 cash，避免与 Tools 显示脱节
   useEffect(() => {
-    if (!backendMode) return;
+    if (!backendGame) return;
     const { matchId, refreshPortfolioFromServer } = useGameStore.getState();
     if (matchId) void refreshPortfolioFromServer();
-  }, [backendMode, symbol]);
+  }, [backendGame, symbol]);
 
   const refreshPreview = useCallback(async (id: ToolType, power: number) => {
-    if (backendMode) {
+    if (backendGame) {
       try {
         const res: any = await get(`/api/dealer/preview-cost?type=${id}&power=${power}&symbol=${symbol}`);
         if (res?.code === 0 && typeof res.data?.cost === 'number') {
@@ -236,15 +236,15 @@ export default function MobileDealerTools({ symbol }: Props) {
       }
     }
     setPreviewMap((m) => ({ ...m, [id]: buildLocalPreview(id, symbol, power) }));
-  }, [symbol, backendMode]);
+  }, [symbol, backendGame]);
 
-  // symbol / backendMode 变化时刷新全部（桌面端同样不在 price tick 上刷新）
+  // symbol / 在线对局变化时刷新全部（桌面端同样不在 price tick 上刷新）
   useEffect(() => {
     (Object.keys(powerMap) as ToolType[]).forEach((id) => {
       refreshPreview(id, powerMap[id]);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol, backendMode]);
+  }, [symbol, backendGame]);
 
   const onPowerChange = useCallback((id: ToolType, v: number) => {
     setPowerMap((m) => ({ ...m, [id]: v }));
@@ -264,14 +264,25 @@ export default function MobileDealerTools({ symbol }: Props) {
       setTimeout(() => setFeedback(null), 1500);
       return;
     }
-    if (cash < cost) {
-      setFeedback({ kind: 'error', msg: `资金不足：需要 ${formatDealerCost(cost)}，可用 ${formatDealerCost(cash)}` });
+    let spendable = cash;
+    if (backendGame) {
+      const { refreshPortfolioFromServer } = useGameStore.getState();
+      const synced = await refreshPortfolioFromServer();
+      if (!synced) {
+        setFeedback({ kind: 'error', msg: '无法同步服务器资金，请稍后重试' });
+        setTimeout(() => setFeedback(null), 1800);
+        return;
+      }
+      spendable = useGameStore.getState().cash;
+    }
+    if (spendable < cost) {
+      setFeedback({ kind: 'error', msg: `资金不足：需要 ${formatDealerCost(cost)}，可用 ${formatDealerCost(spendable)}` });
       setTimeout(() => setFeedback(null), 1500);
       return;
     }
     const r = await Promise.resolve(executeDealerAction({ type: tool.id, power, cost }));
     if (r?.success) {
-      if (!backendMode) {
+      if (!backendGame) {
         setFeedback({ kind: 'success', msg: `${tool.cn} 成功 — ${formatDealerCost(cost)}` });
         refreshPreview(tool.id, power);
       }
@@ -279,7 +290,7 @@ export default function MobileDealerTools({ symbol }: Props) {
       setFeedback({ kind: 'error', msg: r?.error || '执行失败' });
     }
     setTimeout(() => setFeedback(null), 1800);
-  }, [powerMap, previewMap, isUpper, isLower, cash, backendMode, executeDealerAction, refreshPreview]);
+  }, [powerMap, previewMap, isUpper, isLower, cash, backendGame, executeDealerAction, refreshPreview]);
 
   return (
     <div className="m-dealer-tools">

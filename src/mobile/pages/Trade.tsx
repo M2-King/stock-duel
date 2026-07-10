@@ -9,7 +9,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { useGameStore } from '../../store/gameStore';
+import { useGameStore, usesBackendGameState } from '../../store/gameStore';
 import { useCashBalance } from '../../hooks/useCashBalance';
 import MobileChart from '../components/Chart';
 import MobileDealerTools from '../components/DealerTools';
@@ -28,7 +28,7 @@ export default function MobileTrade() {
   const currentQuote = useGameStore((s) => s.currentQuote);
   const { cash, leverage, borrowed } = useCashBalance();
   const placeOrder = useGameStore((s) => s.placeOrder);
-  const backendMode = useGameStore((s) => s.backendMode);
+  const backendGame = useGameStore((s) => usesBackendGameState(s));
   const setLeverage = useGameStore((s) => s.setLeverage);
   const showToast = useGameStore((s) => s.showToast);
   const holdings = useGameStore((s) => s.holdings);
@@ -58,10 +58,10 @@ export default function MobileTrade() {
   useEffect(() => { setLev(leverage); }, [leverage]);
 
   useEffect(() => {
-    if (!backendMode) return;
+    if (!backendGame) return;
     const { matchId, refreshPortfolioFromServer } = useGameStore.getState();
     if (matchId) void refreshPortfolioFromServer();
-  }, [backendMode]);
+  }, [backendGame]);
 
   // Markets 页「买入/卖出」跳转时带上 side
   useEffect(() => {
@@ -90,7 +90,7 @@ export default function MobileTrade() {
   const enoughCash = buyingPowerLive >= estAmount;
   const restriction = stockRestrictions[currentQuote.symbol];
 
-  const confirm = () => {
+  const confirm = async () => {
     if (qty <= 0) {
       showToast('数量需 > 0', 'warning');
       return;
@@ -107,7 +107,7 @@ export default function MobileTrade() {
       showToast('该股票已被监管限制', 'warning');
       return;
     }
-    const r = placeOrder({
+    const r = await placeOrder({
       side,
       type: 'market',
       symbol: currentQuote.symbol,
@@ -116,9 +116,9 @@ export default function MobileTrade() {
       status: 'filled',
       leverage: lev,
     });
-    if (r?.success && !backendMode) {
+    if (r?.success) {
       showToast(`${side === 'buy' ? '买入' : '卖出'}成功 ${qty} 股 @ ¥${currentQuote.price.toFixed(2)}`, 'success');
-    } else if (!r?.success) {
+    } else {
       showToast(r?.error || '下单失败', 'danger');
     }
   };

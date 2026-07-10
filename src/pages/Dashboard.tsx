@@ -461,8 +461,8 @@ export default function Dashboard() {
           <div className="action-buttons">
             <button
               className="action-btn buy-btn"
-              onClick={() => {
-                const result = placeOrder({
+              onClick={async () => {
+                const result = await placeOrder({
                   symbol: currentQuote.symbol,
                   type: orderType,
                   side: 'buy',
@@ -477,8 +477,8 @@ export default function Dashboard() {
             </button>
             <button
               className="action-btn sell-btn"
-              onClick={() => {
-                const result = placeOrder({
+              onClick={async () => {
+                const result = await placeOrder({
                   symbol: currentQuote.symbol,
                   type: orderType,
                   side: 'sell',

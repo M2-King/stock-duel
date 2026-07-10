@@ -36,11 +36,11 @@ export default function Portfolio() {
     return result;
   }, [holdings, filter]);
   
-  const handleClosePosition = (symbol: string) => {
+  const handleClosePosition = async (symbol: string) => {
     const holding = holdings.find(h => h.symbol === symbol);
     if (!holding) return;
 
-    const result = placeOrder({
+    const result = await placeOrder({
       symbol,
       type: 'market',
       side: 'sell',

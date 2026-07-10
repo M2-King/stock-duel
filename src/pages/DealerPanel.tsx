@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, type CSSProperties } from 'react';
-import { useGameStore } from '../store/gameStore';
+import { useGameStore, usesBackendGameState } from '../store/gameStore';
 import { useDealerResources } from '../hooks/useCashBalance';
 import MarketChart from '../components/MarketChart';
 import { formatStockMetaLine } from '../shared/stockMeta';
@@ -41,9 +41,10 @@ interface ToolPreview {
 export default function DealerPanelPage() {
   const {
     currentQuote, insiderData, executeDealerAction,
-    allStocks, stockPrices, selectSymbol, showToast, backendMode,
+    allStocks, stockPrices, selectSymbol, showToast,
     getStockRestriction, currentTick,
   } = useGameStore();
+  const backendGame = useGameStore((s) => usesBackendGameState(s));
   const [powerMap, setPowerMap] = useState<Record<ToolType, number>>({
     pump: 50, press: 50, accumulate: 50, distribute: 50, wash: 50, fake: 50,
   });
@@ -104,7 +105,7 @@ export default function DealerPanelPage() {
   ], []);
 
   const refreshPreview = async (id: ToolType, power: number) => {
-    if (backendMode) {
+    if (backendGame) {
       try {
         const api = await import('../services/apiService');
         const res: any = await api.get(`/api/dealer/preview-cost?type=${id}&power=${power}&symbol=${symbol}`);
@@ -128,13 +129,13 @@ export default function DealerPanelPage() {
   };
 
   useEffect(() => {
-    if (backendMode) {
+    if (backendGame) {
       const { matchId, refreshPortfolioFromServer } = useGameStore.getState();
       if (matchId) void refreshPortfolioFromServer();
     }
     (Object.keys(powerMap) as ToolType[]).forEach((id) => refreshPreview(id, powerMap[id]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol, backendMode]);
+  }, [symbol, backendGame]);
 
   const flashFeedback = (kind: 'success' | 'error' | 'info', msg: string, tool?: ToolType) => {
     setFeedback({ kind, msg });

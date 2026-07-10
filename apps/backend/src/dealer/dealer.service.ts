@@ -61,7 +61,8 @@ export class DealerService {
       row = { risk_index: 0 };
     }
     const player = this.matchSvc.getUserMatchState(matchId, userId);
-    const cash = player?.cash ?? 100_000_000;
+    if (!player) return { cash: 0, energy: 0, riskIndex: row.risk_index };
+    const cash = player.cash;
     return { cash, energy: 0, riskIndex: row.risk_index };
   }
 

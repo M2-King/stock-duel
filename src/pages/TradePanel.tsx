@@ -55,8 +55,8 @@ export default function TradePanel() {
     setTimeout(() => setFeedback(null), 2500);
   };
 
-  const handleBuy = () => {
-    const result = placeOrder({
+  const handleBuy = async () => {
+    const result = await placeOrder({
       symbol: currentQuote.symbol,
       type: orderType as 'market' | 'limit' | 'stop',
       side: 'buy',
@@ -71,8 +71,8 @@ export default function TradePanel() {
     }
   };
 
-  const handleSell = () => {
-    const result = placeOrder({
+  const handleSell = async () => {
+    const result = await placeOrder({
       symbol: currentQuote.symbol,
       type: orderType as 'market' | 'limit' | 'stop',
       side: 'sell',

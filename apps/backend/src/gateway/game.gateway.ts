@@ -251,7 +251,8 @@ export class GameGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       ...data,
       userId: session.userId,
     });
-    socket.emit('trade:result', { side: 'buy', ...res });
+    const out = { side: 'buy' as const, ...this.enrichWithPortfolio(data.matchId, session.userId, res) };
+    socket.emit('trade:result', out);
     if (res.code === 0 && data.matchId) {
       socket.to(`match:${data.matchId}`).emit('peer:trade', { userId: session.userId, side: 'buy', symbol: data.symbol });
     }
@@ -268,7 +269,8 @@ export class GameGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       ...data,
       userId: session.userId,
     });
-    socket.emit('trade:result', { side: 'sell', ...res });
+    const out = { side: 'sell' as const, ...this.enrichWithPortfolio(data.matchId, session.userId, res) };
+    socket.emit('trade:result', out);
     if (res.code === 0 && data.matchId) {
       socket.to(`match:${data.matchId}`).emit('peer:trade', { userId: session.userId, side: 'sell', symbol: data.symbol });
     }
@@ -282,14 +284,48 @@ export class GameGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       return;
     }
     const res = await this.dealer.action({ ...data, userId: session.userId });
-    if (res.code === 0 && data?.matchId) {
-      const portfolioRes = this.trading.portfolio(data.matchId, session.userId);
-      if (portfolioRes.code === 0 && res.data) {
-        (res as any).data = { ...res.data, portfolio: portfolioRes.data };
-      }
+    const enriched = this.enrichWithPortfolio(data?.matchId, session.userId, res);
+    socket.emit('dealer:result', enriched);
+    if (data.matchId) socket.to(`match:${data.matchId}`).emit('peer:dealer', { userId: session.userId, ...enriched });
+  }
+
+  /** 与 dealer:action 相同 session.userId，避免 REST query userId 与 WS 不一致 */
+  @SubscribeMessage('portfolio:sync')
+  async onPortfolioSync(@ConnectedSocket() socket: Socket, @MessageBody() data: { matchId: string }) {
+    const session = this.sessions.get(socket.id);
+    if (!session?.userId) {
+      return { code: 401, message: '未鉴权', data: null };
     }
-    socket.emit('dealer:result', res);
-    if (data.matchId) socket.to(`match:${data.matchId}`).emit('peer:dealer', { userId: session.userId, ...res });
+    if (!data?.matchId) {
+      return { code: 1, message: '缺少 matchId', data: null };
+    }
+    const portfolioRes = this.trading.portfolio(data.matchId, session.userId);
+    if (portfolioRes.code !== 0) {
+      return portfolioRes;
+    }
+    const role = this.matches.getRole(data.matchId, session.userId);
+    const dealerResources = role === 'dealer'
+      ? this.dealer.resources(data.matchId, session.userId)
+      : undefined;
+    return {
+      code: 0,
+      message: 'ok',
+      data: { portfolio: portfolioRes.data, dealerResources },
+    };
+  }
+
+  private enrichWithPortfolio(matchId: string | undefined, userId: string, res: any) {
+    if (!matchId) return res;
+    const portfolioRes = this.trading.portfolio(matchId, userId);
+    if (portfolioRes.code !== 0 || !portfolioRes.data) return res;
+    const role = this.matches.getRole(matchId, userId);
+    const dealerResources = role === 'dealer'
+      ? this.dealer.resources(matchId, userId)
+      : undefined;
+    const data = res.code === 0 && res.data
+      ? { ...res.data, portfolio: portfolioRes.data, resources: dealerResources ?? res.data.resources }
+      : { ...(res.data ?? {}), portfolio: portfolioRes.data, resources: dealerResources };
+    return { ...res, data };
   }
 
   @SubscribeMessage('regulator:action')

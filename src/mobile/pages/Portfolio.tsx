@@ -38,15 +38,15 @@ export default function MobilePortfolio() {
   });
   const positionSum = enriched.reduce((s, h) => s + h.value, 0);
 
-  const handleClose = (sym: string, sellAll = false) => {
+  const handleClose = async (sym: string, sellAll = false) => {
     const h = enriched.find((x) => x.symbol === sym);
     if (!h) return;
     if (sellAll) {
-      closePosition(sym, h.live);
-      showToast(`已平仓 ${sym}`, 'success');
+      const r = await closePosition(sym, h.live);
+      if (r?.success) showToast(`已平仓 ${sym}`, 'success');
+      else showToast(r?.error || '平仓失败', 'danger');
     } else {
-      // 卖一半
-      const r = placeOrder({
+      const r = await placeOrder({
         side: 'sell',
         type: 'market',
         symbol: sym,

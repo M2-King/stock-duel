@@ -18,6 +18,32 @@ export { STOCK_META, getStockMeta, formatStockMetaLine } from '../shared/stockMe
 /** StrictMode 双调用时复用同一次 connectBackend，避免竞态 */
 let connectBackendInFlight: Promise<boolean> | null = null;
 
+/** backend 模式：placeOrder 等待 trade:result 的一次性回调 */
+let pendingTradeResult: ((payload: any) => void) | null = null;
+
+function waitForTradeResult(timeoutMs = 15000): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (pendingTradeResult) {
+        pendingTradeResult = null;
+        reject(new Error('交易确认超时'));
+      }
+    }, timeoutMs);
+    pendingTradeResult = (payload) => {
+      clearTimeout(timer);
+      pendingTradeResult = null;
+      resolve(payload);
+    };
+  });
+}
+
+/** 在线对局：走 WS/REST 权威资金。离线练习永远 false（即使后端在线）。 */
+export function usesBackendGameState(
+  state: Pick<GameState, 'backendMode' | 'matchId' | 'matchFlow'>,
+): boolean {
+  return state.backendMode && !!state.matchId && state.matchFlow !== 'offline';
+}
+
 export type Role = 'dealer' | 'retail' | 'regulator';
 
 // 对局速度预设：1 交易日 = 120 tick，tickInterval = 3000 / speed(ms)
@@ -478,10 +504,10 @@ interface GameState {
   selectSymbol: (symbol: string) => void;
   toggleWatchlist: (symbol: string) => void;
 
-  placeOrder: (order: Omit<OrderRecord, 'id' | 'timestamp'>) => { success: boolean; error?: string };
+  placeOrder: (order: Omit<OrderRecord, 'id' | 'timestamp'>) => Promise<{ success: boolean; error?: string }>;
   setLeverage: (leverage: number) => void;
   setSpeed: (speed: number) => void;
-  closePosition: (symbol: string, price: number) => void;
+  closePosition: (symbol: string, price: number) => Promise<{ success: boolean; error?: string }>;
 
   addNews: (news: NewsItem) => void;
   markNewsRead: (id: string) => void;
@@ -977,7 +1003,7 @@ simulation: {
       : [...s.watchlist, symbol]
   })),
   
-  placeOrder: (order) => {
+  placeOrder: async (order) => {
     const state = get();
     const amount = order.price * order.quantity;
     const restriction = get().getStockRestriction(order.symbol);
@@ -992,8 +1018,8 @@ simulation: {
         return { success: false, error: '该股票已被监管限制' };
       }
     }
-    // Backend mode: 只发指令，结果由 _applyTradeResult 回填
-    if (state.backendMode) {
+    // Backend mode: 唯一资金池 user_match_state.cash — 卖入回款与操盘扣款同一字段
+    if (usesBackendGameState(state)) {
       if (!state.matchId) {
         get().showToast('尚未加入对局', 'warning');
         return { success: false, error: '未入对局' };
@@ -1005,28 +1031,38 @@ simulation: {
         quantity: order.quantity,
         leverage: order.leverage ?? state.leverage,
       };
-      // 异步导入避免循环依赖；先 await socket 连上再 emit，避免 ack 误判。
-      (async () => {
-        try {
-          await get().refreshPortfolioFromServer();
-          const ws = await import('../services/wsService');
-          await ws.waitForAuth(8000);
-          if (order.side === 'buy') ws.sendBuy(payload);
-          else ws.sendSell({ ...payload });
-          console.log('[Trade] sent', order.side, payload);
-        } catch (err) {
-          console.error('[Trade] WS not ready', err);
-          get().showToast(`下单失败: WS 未就绪 (${(err as Error).message})`, 'danger');
+      try {
+        const synced = await get().refreshPortfolioFromServer();
+        if (!synced) {
+          get().showToast('无法同步服务器资金，下单已取消', 'danger');
+          return { success: false, error: '资金未同步' };
         }
-      })();
-      return { success: true };
+        const ws = await import('../services/wsService');
+        await ws.waitForAuth(8000);
+        const resultPromise = waitForTradeResult(15000);
+        if (order.side === 'buy') ws.sendBuy(payload);
+        else ws.sendSell({ ...payload });
+        const result = await resultPromise;
+        if (result?.code !== 0) {
+          if (result?.data?.portfolio) {
+            get()._syncPortfolioFromServer(result.data.portfolio);
+          } else {
+            await get().refreshPortfolioFromServer();
+          }
+          return { success: false, error: result?.message ?? '交易失败' };
+        }
+        return { success: true };
+      } catch (err) {
+        console.error('[Trade] WS not ready', err);
+        get().showToast(`下单失败: ${(err as Error).message}`, 'danger');
+        return { success: false, error: (err as Error).message };
+      }
     }
 
     // Pre-flight validation (local mode)
+    const orderLeverage = order.leverage ?? state.leverage;
     if (order.side === 'buy') {
-      // Leverage lets a buy use up to cash * leverage. The portion above settled
-      // cash becomes borrowed margin (tracked in state.borrowed).
-      const buyingPower = state.cash * state.leverage;
+      const buyingPower = state.cash * orderLeverage;
       if (amount > buyingPower) {
         get().showToast(`资金不足: 需要 ¥${amount.toLocaleString()}，可用杠杆购买力 ¥${buyingPower.toLocaleString()}`, 'warning');
         return { success: false, error: '资金不足' };
@@ -1156,10 +1192,26 @@ simulation: {
     return { success: true };
   },
   
-  closePosition: (symbol, price) => {
+  closePosition: async (symbol, price) => {
+    const state = get();
+    const h = state.holdings.find((x) => x.symbol === symbol);
+    if (!h || h.shares <= 0) {
+      return { success: false, error: '无持仓' };
+    }
+
+    // 在线对局：必须走后端卖出；离线练习始终本地单池
+    if (usesBackendGameState(state)) {
+      return get().placeOrder({
+        side: 'sell',
+        type: 'market',
+        symbol,
+        price,
+        quantity: h.shares,
+        status: 'filled',
+      });
+    }
+
     set((s) => {
-      const h = s.holdings.find(x => x.symbol === symbol);
-      if (!h) return s;
       const proceeds = h.shares * price;
       // Proceeds repay borrowed debt first, then add to settled cash.
       const repay = Math.min(s.borrowed, proceeds);
@@ -1187,6 +1239,7 @@ simulation: {
         orderHistory: [newOrder, ...s.orderHistory].slice(0, 50),
       };
     });
+    return { success: true };
   },
 
   setLeverage: (leverage) => set({ leverage }),
@@ -1465,7 +1518,7 @@ simulation: {
     let effectPct = 0;
     let riskIncrease = 0;
     const localPreview = previewDealerAction(type, symbol, power);
-    if (state.backendMode) {
+    if (usesBackendGameState(state)) {
       try {
         const api = await import('../services/apiService');
         const res = await api.get(`/api/dealer/preview-cost?type=${type}&power=${power}&symbol=${symbol}`);
@@ -1489,13 +1542,17 @@ simulation: {
       riskIncrease = localPreview.riskIncrease;
     }
 
-    // ---- Backend mode: 先同步后端 cash，再发 WS（cash 由 dealer:result 回填） ----
-    if (state.backendMode) {
+    // ---- 在线对局: 先同步后端 cash，再发 WS ----
+    if (usesBackendGameState(state)) {
       if (!state.matchId) {
         get().showToast('尚未加入对局', 'warning');
         return { success: false, error: '未入对局' };
       }
-      await get().refreshPortfolioFromServer();
+      const synced = await get().refreshPortfolioFromServer();
+      if (!synced) {
+        get().showToast('无法同步服务器资金，请检查网络后重试', 'danger');
+        return { success: false, error: '资金未同步' };
+      }
       const freshCash = get().cash;
       if (freshCash < realCost) {
         get().showToast(
@@ -1821,21 +1878,11 @@ simulation: {
       regulator: ['dealer', 'retail'],
     };
     const [ai1, ai2] = aiRoles[role];
-    const state = get();
-    set({ matchFlow: 'offline', role });
-    if (state.backendMode) {
-      const api = await import('../services/apiService');
-      const solo = await api.apiMatch.solo(state.userId, role);
-      if (solo.code !== 0 || !solo.data) {
-        get().showToast(`单人练习启动失败: ${solo.message}`, 'warning');
-        set({ matchFlow: null, gameStatus: 'idle' });
-        return;
-      }
-      get().showToast('单人练习 · AI 对手已就位', 'info');
-      await get()._joinBackendMatch(solo.data.matchId, solo.data.role);
-      return;
-    }
+    // 离线练习 = 纯本地模拟（单资金池 store.cash），不走后端 solo 对局
     set({
+      matchFlow: 'offline',
+      role,
+      matchId: null,
       matchOpponentName: 'AI Bot',
       reversalCards: [
         { role, revealed: true },
@@ -1843,6 +1890,7 @@ simulation: {
         { role: ai2, revealed: false },
       ],
     });
+    get().showToast('离线练习 · 本地模拟（交易与操盘共用现金）', 'info');
     get().enterPlaying();
   },
 
@@ -2142,6 +2190,10 @@ simulation: {
   enterPlaying: () => {
     get().resetGameSession();
     set({ gameStatus: 'playing' });
+    const st = get();
+    if (usesBackendGameState(st) && st.matchId) {
+      void st.refreshPortfolioFromServer();
+    }
   },
 
   _resetMatchToIdle: () => {
@@ -2504,9 +2556,9 @@ simulation: {
     const newChangePct = (newChange / state.currentQuote.prevClose) * 100;
 
     // Dealer energy regen 已移除 — 取消 energy 机制后庄家只受 cash 约束
-    const regenDealerResources = state.dealerResources
-      ? { ...state.dealerResources, cash: state.cash, energy: 0 }
-      : null;
+    const cashPatch = cashSyncPatch(state, state.cash, {
+      riskIndex: state.dealerResources?.riskIndex ?? 0,
+    });
 
     const sym2 = state.currentQuote.symbol;
     const timelineSymbols = new Set<string>([
@@ -2551,7 +2603,7 @@ simulation: {
       timelineBySymbol: tlBySymbolNext,
       currentTick: state.currentTick + 1,
       stockPrices: nextStockPrices,
-      dealerResources: regenDealerResources,
+      ...cashPatch,
     });
 
     // Daily pacing: 4 trading segments separated by 11:30 lunch break and 15:00 close
@@ -3151,7 +3203,7 @@ simulation: {
     const now = Date.now();
 
     const lastPortfolioRefresh = state.simulation._lastPortfolioRefresh ?? 0;
-    if (state.backendMode && state.gameStatus === 'playing' && now - lastPortfolioRefresh > 12_000) {
+    if (usesBackendGameState(state) && state.gameStatus === 'playing' && now - lastPortfolioRefresh > 12_000) {
       void get().refreshPortfolioFromServer();
     }
 
@@ -3312,11 +3364,40 @@ simulation: {
 
   refreshPortfolioFromServer: async () => {
     const state = get();
-    if (!state.backendMode || !state.matchId) return false;
+    if (!usesBackendGameState(state) || !state.matchId) return false;
+
+    const apply = (
+      portfolio: { cash?: number } | null | undefined,
+      dealerResources?: { riskIndex?: number } | null,
+    ) => {
+      if (!portfolio || typeof portfolio.cash !== 'number') return false;
+      get()._syncPortfolioFromServer(portfolio as any, dealerResources ?? null);
+      set((s) => ({
+        simulation: { ...s.simulation, _lastPortfolioRefresh: Date.now() },
+      }));
+      return true;
+    };
+
+    // 优先 WS：与 dealer:action / trade:buy 共用 socket session.userId，避免 REST userId 错位
+    try {
+      const ws = await import('../services/wsService');
+      await ws.waitForAuth(8000);
+      const ack = await ws.syncPortfolio(state.matchId);
+      if (ack?.code === 0 && ack.data?.portfolio) {
+        return apply(ack.data.portfolio, ack.data.dealerResources);
+      }
+      console.warn('[portfolio] WS sync rejected', ack?.message);
+    } catch (err) {
+      console.warn('[portfolio] WS sync failed', err);
+    }
+
+    // REST 兜底
     try {
       const res = await apiService.apiTrade.portfolio(state.matchId, state.userId);
-      if (res.code !== 0 || !res.data || typeof res.data.cash !== 'number') return false;
-
+      if (res.code !== 0 || !res.data || typeof res.data.cash !== 'number') {
+        console.warn('[portfolio] REST sync failed', res.message);
+        return false;
+      }
       let dealerResources: { cash?: number; energy?: number; riskIndex?: number } | null = null;
       if (state.role === 'dealer') {
         const drRes = await apiService.apiDealer.resources(state.matchId, state.userId);
@@ -3324,13 +3405,9 @@ simulation: {
           dealerResources = drRes.data;
         }
       }
-      get()._syncPortfolioFromServer(res.data, dealerResources);
-      set((s) => ({
-        simulation: { ...s.simulation, _lastPortfolioRefresh: Date.now() },
-      }));
-      return true;
+      return apply(res.data, dealerResources);
     } catch (err) {
-      console.warn('[portfolio] refresh failed', err);
+      console.warn('[portfolio] REST sync error', err);
       return false;
     }
   },
@@ -3370,9 +3447,11 @@ simulation: {
 
     if (snap.portfolio) {
       get()._syncPortfolioFromServer(snap.portfolio, snap.dealerResources ?? null);
-    } else if (typeof snap.dealerResources?.cash === 'number') {
+    } else if (!isOffline && usesBackendGameState(get()) && typeof snap.dealerResources?.cash === 'number') {
       const cash = snap.dealerResources.cash;
       set(cashSyncPatch(get(), cash, { riskIndex: snap.dealerResources.riskIndex }));
+    } else if (!isOffline && usesBackendGameState(get()) && (snap.matchId ?? state.matchId)) {
+      void get().refreshPortfolioFromServer();
     }
 
     if (isOffline) {
@@ -3466,10 +3545,18 @@ simulation: {
    * 这是关键：placeOrder 不再直接改 holdings，而是发出去等这里回填。
    */
   _applyTradeResult: (payload) => {
+    if (pendingTradeResult) {
+      pendingTradeResult(payload);
+      pendingTradeResult = null;
+    }
     if (!payload) return;
     if (payload.code !== 0) {
       get().showToast(`交易失败: ${payload.message ?? '未知错误'}`, 'warning');
-      void get().refreshPortfolioFromServer();
+      if (payload.data?.portfolio) {
+        get()._syncPortfolioFromServer(payload.data.portfolio);
+      } else {
+        void get().refreshPortfolioFromServer();
+      }
       return;
     }
     const { side, data } = payload;
@@ -3500,7 +3587,11 @@ simulation: {
     if (!payload) return;
     if (payload.code !== 0) {
       console.warn('[Dealer] 后端返回错误', payload);
-      void get().refreshPortfolioFromServer();
+      if (payload.data?.portfolio) {
+        get()._syncPortfolioFromServer(payload.data.portfolio, payload.data.resources ?? null);
+      } else {
+        void get().refreshPortfolioFromServer();
+      }
       get().showToast(`庄家操作失败: ${payload.message ?? ''}`, 'warning');
       return;
     }

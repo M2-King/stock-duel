@@ -284,6 +284,14 @@ export async function leaveMatch(matchId: string) {
   return emitWithAck('leave-match', { matchId });
 }
 
+export async function syncPortfolio(matchId: string) {
+  return emitWithAck<{ code: number; data?: { portfolio: any; dealerResources?: any }; message?: string }>(
+    'portfolio:sync',
+    { matchId },
+    8000,
+  );
+}
+
 /** 下买单 + 等结果。注意：send 是 fire-and-forget；结果走 trade:result 事件。 */
 export function sendBuy(payload: { matchId: string; symbol: string; price: number; quantity: number; leverage?: number }) {
   getSocket().emit('trade:buy', payload);
