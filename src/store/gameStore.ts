@@ -1904,6 +1904,11 @@ simulation: {
    */
   _joinBackendMatch: async (matchId: string, role: string | null) => {
     if (!matchId) return;
+    // ⛳ 关键：进入新对局瞬间，store 里的 cash 还是上一局的旧值（或默认值）。
+    //   在这里先把所有 cash 相关字段统一重置为 0，避免 Tools / Trade / Home 页面
+    //   在 snapshot 到达前显示错乱的旧资金。
+    //   等 _applyServerSnapshot 拿到后端 portfolio 后，会再用真实值覆盖。
+    get()._resetCashForMatchEntry();
     const ws = await import('../services/wsService');
     // 关键修复：socket.io 在未连接时会 buffer emit，但 ack 可能在 backend 看到
     // auth 完成之前就到达 — 后端 session.userId 为空 → 返回 {ok:false} → 前端误判 401。
@@ -3190,6 +3195,50 @@ simulation: {
     if (nextCount % 25 === 0) {
       get().recalculateIndicators();
     }
+  },
+
+  /**
+   * 加入对局前统一重置 cash 相关字段为同一个值（默认 0）。
+   *
+   * 解决的问题：
+   *   加入对局时 WS 还没拿到 snapshot，store 里的 cash 是上一局 / 默认值。
+   *   在 Tools 页和 Trade 页切换的瞬间，两边可能因为缓存/订阅时序显示出
+   *   不一致的旧值 — 用户会以为"资金变了两份"。
+   *
+   * 解决：
+   *   进对局瞬间把所有 cash 字段统一重置为 0，这样 snapshot 没到的时候
+   *   Tools / Trade / Home / Profile 全部显示 0（一致），snapshot 到了再覆盖。
+   *
+   * 调用点：
+   *   - _joinBackendMatch() — 任何 backend 模式加入对局前
+   *   - startOfflinePractice() — offline 模式开始前（防御性，避免上一局残留）
+   */
+  _resetCashForMatchEntry: () => {
+    const state = get();
+    set({
+      cash: 0,
+      playerCash: 0,
+      borrowed: 0,
+      totalAssets: 0,
+      portfolioTotal: 0,
+      todayPnl: 0,
+      todayPnlPercent: 0,
+      unrealizedPnl: 0,
+      holdings: [],
+      orderHistory: [],
+      stockDailyTraded: {},
+      // 庄家资源重置：cash=0, riskIndex=0, energy=0 (已废弃但保持字段存在)
+      dealerResources: { cash: 0, energy: 0, riskIndex: 0 },
+      dealerInfo: state.dealerInfo
+        ? {
+            ...state.dealerInfo,
+            resources: { cash: 0, energy: 0, riskIndex: 0 },
+          }
+        : {
+            resources: { cash: 0, energy: 0, riskIndex: 0 },
+            hiddenInfo: null,
+          },
+    });
   },
 
   /**
