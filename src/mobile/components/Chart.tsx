@@ -1,224 +1,737 @@
 /**
- * 移动端轻量级内嵌分时/K 线图表（不引 recharts 等重库）。
- * - 主面板 + 成交量子图
- * - 涨跌停 + 开盘价参考线
- * - 自适应宽度
- * - 主题感知：所有色值从 CSS 变量读取，跟随深/浅色模式自动切换
+ * 移动端分时 / K 线图表 — 样式对齐桌面端 MarketChart：
+ *  - 分时：单色线 + 渐变填充、开盘虚线、涨跌停虚线、成交量柱、十字线
+ *  - K 线：红阳绿阴 + 影线、成交量柱、涨跌停虚线、十字线 + OHLC tooltip
  */
 
-import { useMemo, useEffect, useState, useRef } from 'react';
+import {
+  useMemo, useEffect, useState, useRef, useCallback,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import { useGameStore } from '../../store/gameStore';
+
+type Period = '1D' | '1W' | '1M';
 
 interface Props {
   symbol?: string;
 }
 
+interface Candle {
+  timestamp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
 const PRICE_LIMIT_PCT = 0.10;
+const INTRA_WINDOW = 120;
+
+function generateMockCandles(count: number, basePrice: number, seedKey: string): Candle[] {
+  let seed = 0;
+  for (let i = 0; i < seedKey.length; i++) seed = (seed * 31 + seedKey.charCodeAt(i)) >>> 0;
+  const rand = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return (seed & 0xfffffff) / 0xfffffff;
+  };
+  const candles: Candle[] = [];
+  let price = basePrice * 0.985;
+  const drift = (basePrice - price) / count;
+  for (let i = 0; i < count; i++) {
+    const open = price;
+    const noise = (rand() - 0.5) * basePrice * 0.012;
+    const reversion = (basePrice - price) * 0.06;
+    let close = open + noise + reversion + drift;
+    const body = Math.abs(close - open);
+    const wick = body * (0.3 + rand() * 0.7) + basePrice * 0.002;
+    candles.push({
+      timestamp: Date.now() - (count - i) * 86_400_000,
+      open,
+      high: Math.max(open, close) + wick,
+      low: Math.min(open, close) - wick,
+      close,
+      volume: rand() * 1_000_000,
+    });
+    price = close;
+  }
+  if (candles.length) {
+    const last = candles[candles.length - 1];
+    last.close = basePrice;
+    last.high = Math.max(last.high, basePrice);
+    last.low = Math.min(last.low, basePrice);
+  }
+  return candles;
+}
+
+function intradayTimeFromIndex(index: number, windowSize = INTRA_WINDOW): string {
+  const ratio = index / Math.max(windowSize - 1, 1);
+  if (ratio <= 0.5) {
+    const minutesFromOpen = ratio * 2 * 120;
+    const total = 9 * 60 + 30 + minutesFromOpen;
+    const hh = Math.floor(total / 60);
+    const mm = Math.round(total % 60);
+    return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+  }
+  const afternoonRatio = (ratio - 0.5) * 2;
+  const minutesFromPm = afternoonRatio * 120;
+  const total = 13 * 60 + minutesFromPm;
+  const hh = Math.floor(total / 60);
+  const mm = Math.round(total % 60);
+  return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
+function candleTimeLabel(c: Candle, period: Period, index: number): string {
+  if (c.timestamp > 1_000_000_000_000) {
+    const d = new Date(c.timestamp);
+    return `${d.getMonth() + 1}/${d.getDate()}`;
+  }
+  if (period === '1W') {
+    const days = ['一', '二', '三', '四', '五'];
+    return `周${days[index % days.length]}`;
+  }
+  return `${index + 1}日`;
+}
 
 export default function MobileChart({ symbol: propSymbol }: Props) {
   const currentQuote = useGameStore((s) => s.currentQuote);
   const timelineData = useGameStore((s) => s.timelineData);
   const timelineBySymbol = useGameStore((s) => s.timelineBySymbol);
+  const klines = useGameStore((s) => s.klines);
+  const klinesBySymbol = useGameStore((s) => s.klinesBySymbol);
+  const stockPrices = useGameStore((s) => s.stockPrices);
+  const allStocks = useGameStore((s) => s.allStocks);
+
+  const [period, setPeriod] = useState<Period>('1D');
+  const isIntraday = period === '1D';
 
   const sym = propSymbol ?? currentQuote.symbol;
-  const points = sym === currentQuote.symbol ? timelineData : (timelineBySymbol[sym] ?? []);
+  const stock = allStocks.find((x) => x.symbol === sym);
+  const currentPrice =
+    sym === currentQuote.symbol
+      ? currentQuote.price
+      : (stockPrices[sym] ?? stock?.price ?? 0);
 
-  const stock = useGameStore((s) => s.allStocks.find((x) => x.symbol === sym));
-  const stockPrices = useGameStore((s) => s.stockPrices);
-  const currentPrice = sym === currentQuote.symbol ? currentQuote.price : (stockPrices[sym] ?? stock?.price ?? 0);
+  const timeline =
+    sym === currentQuote.symbol ? timelineData : (timelineBySymbol[sym] ?? []);
+  const activeKlines =
+    sym === currentQuote.symbol ? klines : (klinesBySymbol[sym] ?? []);
 
-  const ref = useRef<HTMLDivElement | null>(null);
-  const [w, setW] = useState<number>(320);
-  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
-    if (typeof document === 'undefined') return 'dark';
-    const cur = document.documentElement.getAttribute('data-theme');
-    return cur === 'light' ? 'light' : 'dark';
-  });
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [w, setW] = useState(320);
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
   useEffect(() => {
-    if (!ref.current) return;
+    if (!wrapRef.current) return;
     const ro = new ResizeObserver(() => {
-      if (ref.current) setW(ref.current.clientWidth);
+      if (wrapRef.current) setW(wrapRef.current.clientWidth);
     });
-    ro.observe(ref.current);
-    setW(ref.current.clientWidth);
+    ro.observe(wrapRef.current);
+    setW(wrapRef.current.clientWidth);
     return () => ro.disconnect();
   }, []);
 
-  // 跟随 :root[data-theme] 变化
-  useEffect(() => {
-    if (typeof document === 'undefined') return;
-    const obs = new MutationObserver(() => {
-      const v = document.documentElement.getAttribute('data-theme');
-      setTheme(v === 'light' ? 'light' : 'dark');
-    });
-    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-    return () => obs.disconnect();
-  }, []);
-
-  const palette = useMemo(() => {
-    const isLight = theme === 'light';
-    return {
-      grid:     isLight ? 'rgba(15,17,21,0.06)' : 'rgba(255,255,255,0.05)',
-      openLine: isLight ? 'rgba(15,17,21,0.32)' : 'rgba(255,255,255,0.30)',
-      upper:    isLight ? 'rgba(225,29,72,0.55)' : 'rgba(255,77,79,0.55)',
-      lower:    isLight ? 'rgba(5,150,105,0.55)' : 'rgba(22,199,132,0.55)',
-      upperFg:  isLight ? '#9f1239' : '#ff7882',
-      lowerFg:  isLight ? '#047857' : '#3dd6a6',
-      labelDim: isLight ? 'rgba(15,17,21,0.55)' : 'rgba(255,255,255,0.55)',
-      volLine:  isLight ? 'rgba(15,17,21,0.06)' : 'rgba(255,255,255,0.06)',
-      up:       isLight ? '#e11d48' : '#ff4d4f',
-      down:     isLight ? '#059669' : '#16c784',
-      upTinted: isLight ? 'rgba(225,29,72,0.18)' : 'rgba(255,77,79,0.18)',
-      dnTinted: isLight ? 'rgba(5,150,105,0.18)' : 'rgba(22,199,132,0.18)',
-    };
-  }, [theme]);
-
-  const cfg = useMemo(() => {
-    const W = Math.max(w, 280);
-    const H = 200;
-    const pad = { l: 8, r: 56, t: 14, b: 22 };
-    const mainH = 130;
-    const volH = 36;
-    const volTop = pad.t + mainH + 6;
-
-    const closes = points.length > 0 ? points : [currentPrice];
-    const open = closes[0] ?? currentPrice;
-    const upper = open * (1 + PRICE_LIMIT_PCT);
-    const lower = open * (1 - PRICE_LIMIT_PCT);
-
-    let minV = Math.min(...closes, upper, lower);
-    let maxV = Math.max(...closes, upper, lower);
-
-    const n = closes.length;
-    const innerW = W - pad.l - pad.r;
-    const innerH = mainH;
-    const xStep = innerW / Math.max(n - 1, 1);
-    const yScale = (v: number) => pad.t + (1 - (v - minV) / Math.max(maxV - minV, 1e-9)) * innerH;
-    const xScale = (i: number) => pad.l + i * xStep;
-
-    const segs: { d: string; color: string }[] = [];
-    for (let i = 1; i < n; i++) {
-      const c0 = closes[i - 1], c1 = closes[i];
-      const x0 = xScale(i - 1), y0 = yScale(c0);
-      const x1 = xScale(i), y1 = yScale(c1);
-      segs.push({
-        d: `M ${x0.toFixed(1)} ${y0.toFixed(1)} L ${x1.toFixed(1)} ${y1.toFixed(1)}`,
-        color: c1 >= c0 ? palette.up : palette.down,
-      });
+  // Day open: prefer quote.open / prevClose, else first timeline point
+  const dayOpen = useMemo(() => {
+    if (sym === currentQuote.symbol && currentQuote.open > 0) return currentQuote.open;
+    if (sym === currentQuote.symbol && currentQuote.prevClose > 0) return currentQuote.prevClose;
+    if (stock) {
+      const prev = stock.price - stock.change;
+      if (prev > 0) return prev;
     }
+    if (timeline.length > 0) return timeline[0];
+    return currentPrice || 1;
+  }, [sym, currentQuote, stock, timeline, currentPrice]);
 
-    const lastX = xScale(n - 1);
-    const areaD = n >= 2
-      ? `${segs.map((s) => s.d).join(' L ').replace(/^M /, 'M ')} L ${lastX.toFixed(1)} ${(pad.t + mainH).toFixed(1)} L ${pad.l.toFixed(1)} ${(pad.t + mainH).toFixed(1)} Z`
+  const limitUp = dayOpen * (1 + PRICE_LIMIT_PCT);
+  const limitDown = dayOpen * (1 - PRICE_LIMIT_PCT);
+
+  const intradayPoints = useMemo(() => {
+    if (!isIntraday) return [] as number[];
+    if (timeline.length > 0) {
+      return timeline.length >= INTRA_WINDOW ? timeline.slice(-INTRA_WINDOW) : [...timeline];
+    }
+    // lightweight mock when no live data yet
+    const pts: number[] = [];
+    let p = dayOpen;
+    for (let i = 0; i < 40; i++) {
+      p = Math.max(limitDown, Math.min(limitUp, p * (1 + (Math.random() - 0.48) * 0.004)));
+      pts.push(p);
+    }
+    return pts;
+  }, [isIntraday, timeline, dayOpen, limitUp, limitDown]);
+
+  const candles = useMemo(() => {
+    if (isIntraday) return [] as Candle[];
+    const count = period === '1W' ? 30 : 60;
+    const mock = generateMockCandles(count, currentPrice || dayOpen, `${sym}-${period}`);
+    const live = (activeKlines as Candle[]).filter(
+      (k) => Number.isFinite(k?.close) && k.close > 0,
+    );
+    return [...mock, ...live].slice(-count);
+  }, [isIntraday, period, currentPrice, dayOpen, sym, activeKlines]);
+
+  const layout = useMemo(() => {
+    const W = Math.max(w, 280);
+    const H = 240;
+    const pad = { l: 8, r: 58, t: 14, b: 22 };
+    const mainH = 150;
+    const volH = 40;
+    const gap = 6;
+    const volTop = pad.t + mainH + gap;
+    const innerW = W - pad.l - pad.r;
+    return { W, H, pad, mainH, volH, volTop, innerW };
+  }, [w]);
+
+  const intraGeom = useMemo(() => {
+    if (!isIntraday) return null;
+    const { pad, mainH, volH, volTop, innerW } = layout;
+    const points = intradayPoints;
+    const n = Math.max(points.length, 1);
+    const open = points[0] ?? dayOpen;
+
+    const spanPct = 0.05;
+    const floorSpan = (open || 1) * spanPct;
+    const dataMin = Math.min(...points, limitDown);
+    const dataMax = Math.max(...points, limitUp);
+    const dataSpan = Math.max(0, dataMax - dataMin) * 1.15;
+    const span = Math.max(floorSpan * 2, dataSpan, (limitUp - limitDown) * 0.5);
+    let minVal = open - span / 2;
+    let maxVal = open + span / 2;
+    minVal = Math.min(minVal, limitDown);
+    maxVal = Math.max(maxVal, limitUp);
+    const range = maxVal - minVal || 1;
+
+    const xScale = (i: number) => pad.l + (i / Math.max(INTRA_WINDOW - 1, 1)) * innerW;
+    const yScale = (v: number) => pad.t + (1 - (v - minVal) / range) * mainH;
+
+    const linePath = points
+      .map((v, i) => `${i === 0 ? 'M' : 'L'} ${xScale(i).toFixed(1)} ${yScale(v).toFixed(1)}`)
+      .join(' ');
+    const lastX = xScale(Math.max(n - 1, 0));
+    const areaPath = n >= 2
+      ? `${linePath} L ${lastX.toFixed(1)} ${(pad.t + mainH).toFixed(1)} L ${xScale(0).toFixed(1)} ${(pad.t + mainH).toFixed(1)} Z`
       : '';
 
     const vols: number[] = [];
-    for (let i = 1; i < n; i++) vols.push(Math.abs(closes[i] - closes[i - 1]));
+    for (let i = 1; i < n; i++) vols.push(Math.abs(points[i] - points[i - 1]));
+    if (vols.length === 0) vols.push(0);
     const maxVol = Math.max(...vols, 1e-9);
-    const barW = Math.max(2, Math.min(6, xStep * 0.7));
-    const volSegs = vols.map((v, i) => {
-      const x = xScale(i + 1) - barW / 2;
-      const y = volTop + (1 - v / maxVol) * volH;
-      const h = volTop + volH - y;
-      const up = closes[i + 1] >= closes[i];
+    const bw = Math.max(1, (innerW / INTRA_WINDOW) * 0.6);
+    const volBars = vols.map((v, i) => {
+      const idx = i + 1;
+      const barH = (v / maxVol) * (volH - 4);
+      const up = points[idx] >= points[idx - 1];
       return {
-        x, y, h,
-        color: up ? `${palette.up}99` : `${palette.down}99`,
+        x: xScale(idx) - bw / 2,
+        y: volTop + volH - barH,
+        h: Math.max(1, barH),
+        up,
+      };
+    });
+
+    const lastP = points[n - 1] ?? open;
+    const up = lastP >= open;
+
+    return {
+      points, n, open, minVal, maxVal, range,
+      xScale, yScale, linePath, areaPath, volBars, bw,
+      lastP, up,
+    };
+  }, [isIntraday, intradayPoints, layout, dayOpen, limitUp, limitDown]);
+
+  const candleGeom = useMemo(() => {
+    if (isIntraday || candles.length === 0) return null;
+    const { pad, mainH, volH, volTop, innerW } = layout;
+    const n = candles.length;
+    const opens = candles.map((c) => c.open);
+    const highs = candles.map((c) => c.high);
+    const lows = candles.map((c) => c.low);
+    const open0 = opens[0] ?? dayOpen;
+
+    let minVal = Math.min(...lows, limitDown);
+    let maxVal = Math.max(...highs, limitUp);
+    const span = maxVal - minVal || 1;
+    minVal -= span * 0.05;
+    maxVal += span * 0.05;
+    const range = maxVal - minVal || 1;
+
+    const slotW = innerW / Math.max(n, 1);
+    const candleW = Math.max(2, Math.min(slotW * 0.72, 14));
+    const xScale = (i: number) => pad.l + (i + 0.5) * slotW;
+    const yScale = (v: number) => pad.t + (1 - (v - minVal) / range) * mainH;
+
+    const maxVol = Math.max(...candles.map((c) => c.volume), 1);
+    const volBars = candles.map((c, i) => {
+      const barH = (c.volume / maxVol) * (volH - 4);
+      const up = c.close >= c.open;
+      return {
+        x: xScale(i) - candleW / 2,
+        y: volTop + volH - barH,
+        h: Math.max(1, barH),
+        w: candleW,
+        up,
+      };
+    });
+
+    const bodies = candles.map((c, i) => {
+      const up = c.close >= c.open;
+      const bodyTop = yScale(Math.max(c.open, c.close));
+      const bodyBottom = yScale(Math.min(c.open, c.close));
+      return {
+        i,
+        x: xScale(i),
+        up,
+        bodyTop,
+        bodyH: Math.max(1, bodyBottom - bodyTop),
+        wickTop: yScale(c.high),
+        wickBottom: yScale(c.low),
+        candleW,
+        ohlc: c,
       };
     });
 
     return {
-      W, H, pad, mainH, volH, volTop,
-      open, upper, lower, closes,
-      segs, areaD,
-      yScale, xScale, innerW, volSegs, barW,
-      n, currentPrice,
+      n, open0, minVal, maxVal, range,
+      xScale, yScale, bodies, volBars, candleW,
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [points, currentPrice, w, sym, palette]);
+  }, [isIntraday, candles, layout, dayOpen, limitUp, limitDown]);
 
-  const trendUp = cfg.closes[cfg.n - 1] >= cfg.open;
-  const lastLabelColor = trendUp ? palette.up : palette.down;
-  const fillColor = trendUp ? palette.upTinted : palette.dnTinted;
+  const indexFromClientX = useCallback(
+    (clientX: number, count: number, denom: number) => {
+      const el = wrapRef.current;
+      if (!el || count <= 0) return 0;
+      const rect = el.getBoundingClientRect();
+      const svgPad = 8; // .m-chart-wrap padding
+      const x = clientX - rect.left - svgPad;
+      const { pad, innerW } = layout;
+      const raw = ((x - pad.l) / Math.max(innerW, 1)) * denom;
+      return Math.round(Math.max(0, Math.min(count - 1, raw)));
+    },
+    [layout],
+  );
+
+  const onPointer = useCallback(
+    (e: ReactPointerEvent) => {
+      if (isIntraday && intraGeom) {
+        setHoverIdx(indexFromClientX(e.clientX, intraGeom.n, INTRA_WINDOW - 1));
+      } else if (candleGeom) {
+        setHoverIdx(indexFromClientX(e.clientX, candleGeom.n, Math.max(candleGeom.n - 1, 1)));
+      }
+    },
+    [isIntraday, intraGeom, candleGeom, indexFromClientX],
+  );
+
+  const clearHover = useCallback(() => setHoverIdx(null), []);
+
+  const { W, H, pad, mainH, volTop, innerW } = layout;
+  const upColor = 'var(--price-up, #dc2626)';
+  const downColor = 'var(--price-down, #16a34a)';
+
+  const hover = useMemo(() => {
+    if (hoverIdx === null) return null;
+    if (isIntraday && intraGeom && hoverIdx < intraGeom.n) {
+      const price = intraGeom.points[hoverIdx];
+      return {
+        index: hoverIdx,
+        x: intraGeom.xScale(hoverIdx),
+        y: intraGeom.yScale(price),
+        price,
+        time: intradayTimeFromIndex(hoverIdx, INTRA_WINDOW),
+        ohlc: null as null | Candle,
+      };
+    }
+    if (!isIntraday && candleGeom && hoverIdx < candleGeom.n) {
+      const c = candles[hoverIdx];
+      return {
+        index: hoverIdx,
+        x: candleGeom.xScale(hoverIdx),
+        y: candleGeom.yScale(c.close),
+        price: c.close,
+        time: candleTimeLabel(c, period, hoverIdx),
+        ohlc: c,
+      };
+    }
+    return null;
+  }, [hoverIdx, isIntraday, intraGeom, candleGeom, candles, period]);
+
+  const lineColor = isIntraday && intraGeom
+    ? (intraGeom.up ? upColor : downColor)
+    : upColor;
+  const areaTop = isIntraday && intraGeom
+    ? (intraGeom.up ? 'rgba(220, 38, 38, 0.18)' : 'rgba(22, 163, 74, 0.18)')
+    : 'rgba(220, 38, 38, 0.18)';
+  const areaBot = isIntraday && intraGeom
+    ? (intraGeom.up ? 'rgba(220, 38, 38, 0)' : 'rgba(22, 163, 74, 0)')
+    : 'rgba(220, 38, 38, 0)';
+
+  const yScaleActive = isIntraday ? intraGeom?.yScale : candleGeom?.yScale;
+  const openY = yScaleActive?.(isIntraday ? (intraGeom?.open ?? dayOpen) : (candleGeom?.open0 ?? dayOpen));
+  const upperY = yScaleActive?.(limitUp);
+  const lowerY = yScaleActive?.(limitDown);
 
   return (
-    <div ref={ref} className="m-chart-wrap" style={{ margin: '12px 0 0' }}>
-      <svg viewBox={`0 0 ${cfg.W} ${cfg.H}`} className="m-chart-svg" preserveAspectRatio="none">
-        {/* 主面板网格 */}
-        {[0.25, 0.5, 0.75].map((p) => (
+    <div className="m-chart-wrap" ref={wrapRef}>
+      <div className="m-chart-periods" role="tablist" aria-label="图表周期">
+        {([
+          ['1D', '分时'],
+          ['1W', '日K'],
+          ['1M', '周K'],
+        ] as const).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={period === id}
+            className={`m-chart-period ${period === id ? 'active' : ''}`}
+            onClick={() => { setPeriod(id); setHoverIdx(null); }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        className="m-chart-svg"
+        preserveAspectRatio="none"
+        onPointerDown={onPointer}
+        onPointerMove={onPointer}
+        onPointerUp={clearHover}
+        onPointerCancel={clearHover}
+        onPointerLeave={clearHover}
+      >
+        <defs>
+          <linearGradient id="m-intra-area" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={areaTop} />
+            <stop offset="100%" stopColor={areaBot} />
+          </linearGradient>
+        </defs>
+
+        {/* grid */}
+        {[0.1, 0.3, 0.5, 0.7, 0.9].map((t) => (
           <line
-            key={p}
-            x1={cfg.pad.l} x2={cfg.W - cfg.pad.r}
-            y1={cfg.pad.t + p * cfg.mainH} y2={cfg.pad.t + p * cfg.mainH}
-            stroke={palette.grid} strokeWidth="1"
+            key={t}
+            x1={pad.l}
+            x2={W - pad.r}
+            y1={pad.t + t * mainH}
+            y2={pad.t + t * mainH}
+            stroke={t === 0.5 ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.05)'}
+            strokeWidth={1}
           />
         ))}
 
-        {/* 开盘 / 涨停 / 跌停 3 条参考线 */}
-        <line
-          x1={cfg.pad.l} x2={cfg.W - cfg.pad.r}
-          y1={cfg.yScale(cfg.open)} y2={cfg.yScale(cfg.open)}
-          stroke={palette.openLine} strokeDasharray="4 4" strokeWidth="0.8"
-        />
-        <line
-          x1={cfg.pad.l} x2={cfg.W - cfg.pad.r}
-          y1={cfg.yScale(cfg.upper)} y2={cfg.yScale(cfg.upper)}
-          stroke={palette.upper} strokeDasharray="5 4" strokeWidth="1"
-        />
-        <text x={cfg.W - cfg.pad.r + 4} y={cfg.yScale(cfg.upper) + 3} fontSize="9" fill={palette.upperFg}>
-          ↑{cfg.upper.toFixed(2)}
-        </text>
-        <line
-          x1={cfg.pad.l} x2={cfg.W - cfg.pad.r}
-          y1={cfg.yScale(cfg.lower)} y2={cfg.yScale(cfg.lower)}
-          stroke={palette.lower} strokeDasharray="5 4" strokeWidth="1"
-        />
-        <text x={cfg.W - cfg.pad.r + 4} y={cfg.yScale(cfg.lower) + 3} fontSize="9" fill={palette.lowerFg}>
-          ↓{cfg.lower.toFixed(2)}
-        </text>
+        {/* 开盘虚线 */}
+        {openY !== undefined && (
+          <g>
+            <line
+              x1={pad.l} x2={W - pad.r} y1={openY} y2={openY}
+              stroke="rgba(255,255,255,0.4)" strokeWidth={0.8} strokeDasharray="4 4"
+            />
+            <text
+              x={W - pad.r + 4} y={openY + 4}
+              fill="rgba(255,255,255,0.6)" fontSize={9}
+              fontFamily="ui-monospace, monospace"
+            >
+              开盘 {(isIntraday ? intraGeom?.open : candleGeom?.open0)?.toFixed(2)}
+            </text>
+          </g>
+        )}
 
-        {/* 面积 + 主曲线 */}
-        {cfg.areaD && <path d={cfg.areaD} fill="url(#m-chart-fill)" />}
-        <defs>
-          <linearGradient id="m-chart-fill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={fillColor} />
-            <stop offset="100%" stopColor="transparent" />
-          </linearGradient>
-        </defs>
-        {cfg.segs.map((s, i) => (
-          <path key={i} d={s.d} stroke={s.color} strokeWidth="1.5" fill="none" vectorEffect="non-scaling-stroke" />
-        ))}
+        {/* 涨跌停虚线 + 半透明色带 */}
+        {upperY !== undefined && lowerY !== undefined && (
+          <g>
+            <rect
+              x={pad.l}
+              y={Math.max(pad.t, upperY)}
+              width={innerW}
+              height={Math.max(0, pad.t + mainH - Math.max(pad.t, upperY))}
+              fill="rgba(220, 38, 38, 0.08)"
+            />
+            <line
+              x1={pad.l} x2={W - pad.r} y1={upperY} y2={upperY}
+              stroke="rgba(220, 38, 38, 0.7)" strokeWidth={1} strokeDasharray="6 3"
+            />
+            <text
+              x={W - pad.r + 4} y={upperY + 4}
+              fill="rgba(220, 38, 38, 0.9)" fontSize={9} fontWeight={600}
+              fontFamily="ui-monospace, monospace"
+            >
+              ↑ 涨停 {limitUp.toFixed(2)}
+            </text>
 
-        {/* 成交量子图分割线 */}
-        <line
-          x1={cfg.pad.l} x2={cfg.W - cfg.pad.r}
-          y1={cfg.volTop} y2={cfg.volTop}
-          stroke={palette.volLine}
-        />
-        {cfg.volSegs.map((b, i) => (
-          <rect key={i} x={b.x} y={b.y} width={cfg.barW} height={b.h} fill={b.color} />
-        ))}
+            <rect
+              x={pad.l}
+              y={lowerY}
+              width={innerW}
+              height={Math.max(0, Math.min(pad.t + mainH, lowerY + 1) - lowerY)}
+              fill="rgba(22, 163, 74, 0.08)"
+            />
+            <line
+              x1={pad.l} x2={W - pad.r} y1={lowerY} y2={lowerY}
+              stroke="rgba(22, 163, 74, 0.7)" strokeWidth={1} strokeDasharray="6 3"
+            />
+            <text
+              x={W - pad.r + 4} y={lowerY + 4}
+              fill="rgba(22, 163, 74, 0.9)" fontSize={9} fontWeight={600}
+              fontFamily="ui-monospace, monospace"
+            >
+              ↓ 跌停 {limitDown.toFixed(2)}
+            </text>
+          </g>
+        )}
 
-        {/* 右轴价格标签 */}
-        {[
-          { v: cfg.upper, label: cfg.upper.toFixed(2) },
-          { v: cfg.open, label: cfg.open.toFixed(2) },
-          { v: cfg.lower, label: cfg.lower.toFixed(2) },
-          { v: cfg.currentPrice, label: cfg.currentPrice.toFixed(2), hi: true },
-        ].map((row, i) => (
-          <text
-            key={i}
-            x={cfg.W - cfg.pad.r + 4}
-            y={cfg.yScale(row.v) + 3}
-            fontSize="9"
-            fill={row.hi ? lastLabelColor : palette.labelDim}
-            fontFamily="ui-monospace, monospace"
-            fontWeight={row.hi ? 700 : 400}
-          >
-            {row.label}
-          </text>
-        ))}
+        {/* ===== 分时 ===== */}
+        {isIntraday && intraGeom && (
+          <g>
+            {intraGeom.areaPath && (
+              <path d={intraGeom.areaPath} fill="url(#m-intra-area)" />
+            )}
+            <path
+              d={intraGeom.linePath}
+              stroke={lineColor}
+              strokeWidth={1.5}
+              fill="none"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+            {/* 最新价虚线 + 涨跌幅标签 */}
+            {(() => {
+              const yL = intraGeom.yScale(intraGeom.lastP);
+              const pct = intraGeom.open > 0
+                ? ((intraGeom.lastP - intraGeom.open) / intraGeom.open) * 100
+                : 0;
+              const sign = pct >= 0 ? '+' : '−';
+              return (
+                <g>
+                  <line
+                    x1={pad.l} x2={W - pad.r} y1={yL} y2={yL}
+                    stroke={lineColor} strokeWidth={1} strokeDasharray="3 3" opacity={0.7}
+                  />
+                  <rect
+                    x={W - pad.r + 2} y={yL - 9} width={52} height={18}
+                    fill={intraGeom.up ? 'rgba(220, 38, 38, 0.85)' : 'rgba(22, 163, 74, 0.85)'}
+                    rx={2}
+                  />
+                  <text
+                    x={W - pad.r + 28} y={yL + 4}
+                    fill="#fff" fontSize={9} fontWeight={600}
+                    fontFamily="ui-monospace, monospace" textAnchor="middle"
+                  >
+                    {`${sign}${Math.abs(pct).toFixed(2)}%`}
+                  </text>
+                </g>
+              );
+            })()}
+            {/* VOL */}
+            <line
+              x1={pad.l} x2={W - pad.r} y1={volTop} y2={volTop}
+              stroke="rgba(255,255,255,0.08)"
+            />
+            <text
+              x={pad.l + 2} y={volTop + 10}
+              fill="rgba(255,255,255,0.45)" fontSize={8}
+              fontFamily="ui-monospace, monospace"
+            >
+              VOL
+            </text>
+            {intraGeom.volBars.map((b, i) => (
+              <rect
+                key={i}
+                x={b.x}
+                y={b.y}
+                width={intraGeom.bw}
+                height={b.h}
+                fill={b.up ? upColor : downColor}
+                opacity={0.7}
+              />
+            ))}
+            {/* time axis */}
+            {[
+              { r: 0, t: '09:30' },
+              { r: 0.25, t: '10:30' },
+              { r: 0.5, t: '11:30' },
+              { r: 0.75, t: '14:00' },
+              { r: 1, t: '15:00' },
+            ].map((lbl) => (
+              <text
+                key={lbl.t}
+                x={pad.l + lbl.r * innerW}
+                y={H - 6}
+                fill="rgba(255,255,255,0.4)"
+                fontSize={8}
+                fontFamily="ui-monospace, monospace"
+                textAnchor="middle"
+              >
+                {lbl.t}
+              </text>
+            ))}
+          </g>
+        )}
+
+        {/* ===== K 线 ===== */}
+        {!isIntraday && candleGeom && (
+          <g>
+            {candleGeom.bodies.map((b) => {
+              const color = b.up ? upColor : downColor;
+              return (
+                <g key={b.i}>
+                  <line
+                    x1={b.x} y1={b.wickTop} x2={b.x} y2={b.wickBottom}
+                    stroke={color} strokeWidth={1} opacity={0.9}
+                  />
+                  <rect
+                    x={b.x - b.candleW / 2}
+                    y={b.bodyTop}
+                    width={b.candleW}
+                    height={b.bodyH}
+                    fill={color}
+                    fillOpacity={b.up ? 0.95 : 1}
+                    stroke={color}
+                    strokeWidth={0.5}
+                    rx={0.5}
+                  />
+                </g>
+              );
+            })}
+            <line
+              x1={pad.l} x2={W - pad.r} y1={volTop} y2={volTop}
+              stroke="rgba(255,255,255,0.08)"
+            />
+            <text
+              x={pad.l + 2} y={volTop + 10}
+              fill="rgba(255,255,255,0.45)" fontSize={8}
+              fontFamily="ui-monospace, monospace"
+            >
+              VOL
+            </text>
+            {candleGeom.volBars.map((b, i) => (
+              <rect
+                key={i}
+                x={b.x}
+                y={b.y}
+                width={b.w}
+                height={b.h}
+                fill={b.up ? upColor : downColor}
+                opacity={0.7}
+              />
+            ))}
+          </g>
+        )}
+
+        {/* 十字线 + tooltip */}
+        {hover && (
+          <g className="m-crosshair" pointerEvents="none">
+            <line
+              x1={hover.x} x2={hover.x}
+              y1={pad.t} y2={pad.t + mainH}
+              stroke="rgba(255,255,255,0.35)" strokeWidth={1} strokeDasharray="4 4"
+            />
+            <line
+              x1={pad.l} x2={W - pad.r}
+              y1={hover.y} y2={hover.y}
+              stroke="rgba(255,255,255,0.35)" strokeWidth={1} strokeDasharray="4 4"
+            />
+            <rect
+              x={W - pad.r}
+              y={hover.y - 9}
+              width={pad.r - 4}
+              height={18}
+              fill={hover.ohlc
+                ? (hover.ohlc.close >= hover.ohlc.open ? upColor : downColor)
+                : (hover.price >= dayOpen ? upColor : downColor)}
+              rx={2}
+              opacity={0.92}
+            />
+            <text
+              x={W - pad.r / 2}
+              y={hover.y + 4}
+              fill="#fff"
+              fontSize={10}
+              fontWeight={600}
+              fontFamily="ui-monospace, monospace"
+              textAnchor="middle"
+            >
+              {hover.price.toFixed(2)}
+            </text>
+            <rect
+              x={Math.max(pad.l, hover.x - 28)}
+              y={H - pad.b + 2}
+              width={56}
+              height={16}
+              fill="rgba(0,0,0,0.55)"
+              stroke="rgba(255,255,255,0.15)"
+              rx={2}
+            />
+            <text
+              x={Math.max(pad.l + 28, hover.x)}
+              y={H - pad.b + 13}
+              fill="rgba(255,255,255,0.75)"
+              fontSize={9}
+              fontFamily="ui-monospace, monospace"
+              textAnchor="middle"
+            >
+              {hover.time}
+            </text>
+
+            {/* floating tip */}
+            {(() => {
+              const tipW = hover.ohlc ? 120 : 96;
+              const tipH = hover.ohlc ? 62 : 34;
+              const tipX = Math.min(hover.x + 10, W - tipW - pad.r - 4);
+              const tipY = Math.max(pad.t + 4, hover.y - tipH - 8);
+              const pc = hover.ohlc
+                ? (hover.ohlc.close >= hover.ohlc.open ? upColor : downColor)
+                : (hover.price >= dayOpen ? upColor : downColor);
+              return (
+                <g>
+                  <rect
+                    x={tipX} y={tipY} width={tipW} height={tipH}
+                    fill="rgba(0,0,0,0.72)" stroke="rgba(255,255,255,0.12)" rx={3}
+                  />
+                  {hover.ohlc ? (
+                    <>
+                      {[
+                        { l: '开', v: hover.ohlc.open, c: 'rgba(255,255,255,0.75)' },
+                        { l: '高', v: hover.ohlc.high, c: upColor },
+                        { l: '低', v: hover.ohlc.low, c: downColor },
+                        { l: '收', v: hover.ohlc.close, c: pc },
+                      ].map((row, i) => (
+                        <text
+                          key={row.l}
+                          x={tipX + 8}
+                          y={tipY + 14 + i * 12}
+                          fill={row.c}
+                          fontSize={9}
+                          fontFamily="ui-monospace, monospace"
+                        >
+                          {`${row.l} ${row.v.toFixed(2)}`}
+                        </text>
+                      ))}
+                    </>
+                  ) : (
+                    <>
+                      <text
+                        x={tipX + 8} y={tipY + 14}
+                        fill={pc} fontSize={10} fontWeight={600}
+                        fontFamily="ui-monospace, monospace"
+                      >
+                        {hover.price.toFixed(2)}
+                      </text>
+                      <text
+                        x={tipX + 8} y={tipY + 26}
+                        fill="rgba(255,255,255,0.65)" fontSize={9}
+                        fontFamily="ui-monospace, monospace"
+                      >
+                        {hover.time}
+                      </text>
+                    </>
+                  )}
+                </g>
+              );
+            })()}
+          </g>
+        )}
       </svg>
     </div>
   );

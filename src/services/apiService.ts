@@ -4,13 +4,11 @@
  *  - 后端可达：用 fetch 把响应解析成 { code, data, message } 并返回
  *  - 后端不可达 / 网络错误：返回 Fail('网络错误'|'后端未启用') 由调用方决定降级
  *
- *  baseURL 取自 src/config.ts → EFFECTIVE_API_BASE
- *  localhost → :3000；服务器 → 同源 Nginx 反代。VITE_BACKEND_URL 可覆盖。
+ *  baseURL 取自 src/config.ts → getApiBase()
+ *  localhost → :3000；服务器 → 同源相对路径 ''。VITE_BACKEND_URL 可覆盖。
  */
 
-import { EFFECTIVE_API_BASE } from '../config';
-
-const BASE_URL = EFFECTIVE_API_BASE;
+import { getApiBase } from '../config';
 
 export interface ApiResponse<T = any> {
   code: number;
@@ -30,7 +28,8 @@ async function http<T>(
   body?: any,
 ): Promise<ApiResponse<T>> {
   try {
-    const res = await fetch(`${BASE_URL}${path}`, {
+    const base = getApiBase();
+    const res = await fetch(`${base}${path}`, {
       method,
       headers: body ? { 'Content-Type': 'application/json' } : undefined,
       body: body ? JSON.stringify(body) : undefined,
@@ -46,26 +45,16 @@ async function http<T>(
   }
 }
 
-/**
- * 探测后端是否可达。
- * Nginx 反代场景下 /health 常被 SPA fallback 成 index.html（仍 200），
- * 因此优先探测 /api/auth/guest 并校验 JSON { code }。
- */
+/** 探测后端是否可达：同源 /api/auth/guest，仅看 ok + code === 0 */
 export async function pingBackend(): Promise<boolean> {
-  const probes = [`${BASE_URL}/api/auth/guest`, `${BASE_URL}/health`];
-  for (const url of probes) {
-    try {
-      const res = await fetch(url, { method: 'GET' });
-      if (!res.ok || res.status >= 500) continue;
-      const ct = res.headers.get('content-type') ?? '';
-      if (!ct.includes('application/json')) continue;
-      const json = (await res.json()) as { code?: number };
-      if (typeof json?.code === 'number') return true;
-    } catch {
-      /* try next probe */
-    }
+  try {
+    const res = await fetch('/api/auth/guest');
+    if (!res.ok) return false;
+    const json = (await res.json()) as { code?: number };
+    return json?.code === 0;
+  } catch {
+    return false;
   }
-  return false;
 }
 
 // ============================================================
@@ -203,4 +192,4 @@ export const apiRegulator = {
   },
 };
 
-export const BASE = BASE_URL;
+export const BASE = getApiBase();

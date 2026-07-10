@@ -97,16 +97,20 @@ function App() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      let connected = false;
       try {
-        await connectBackend();
-      } catch {
-        /* ignored — backendMode stays false */
+        connected = await connectBackend();
+      } catch (err) {
+        console.warn('[StockDuel] connectBackend threw', err);
       }
       if (cancelled) return;
-      if (!useGameStore.getState().backendMode) {
-        // No toast here — connectBackend already surfaced a friendly message
-        console.info('[StockDuel] backend not available, using local simulation');
+      const mode = useGameStore.getState().backendMode;
+      if (connected && mode) {
+        console.info('[StockDuel] backend connected');
+        return;
       }
+      // No toast here — connectBackend already surfaced a friendly message
+      console.info('[StockDuel] backend not available, using local simulation');
     })();
     return () => {
       cancelled = true;

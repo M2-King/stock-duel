@@ -11,7 +11,12 @@ import {
   WARN_TICKS,
   formatWan,
 } from '../shared/tradeLimits';
+import * as apiService from '../services/apiService';
+import * as wsSvc from '../services/wsService';
 export { STOCK_META, getStockMeta, formatStockMetaLine } from '../shared/stockMeta';
+
+/** StrictMode 双调用时复用同一次 connectBackend，避免竞态 */
+let connectBackendInFlight: Promise<boolean> | null = null;
 
 export type Role = 'dealer' | 'retail' | 'regulator';
 
@@ -2911,115 +2916,124 @@ simulation: {
   // ============================================================
 
   connectBackend: async () => {
-    const { apiAuth, pingBackend, apiMarket } = await import('../services/apiService');
-    const wsSvc = await import('../services/wsService');
+    if (get().backendMode && get().authToken) return true;
+    if (connectBackendInFlight) return connectBackendInFlight;
 
-    const ok = await pingBackend();
-    if (!ok) {
-      // 后端不可达，保持本地模拟；不抛错。
-      get().showToast('后端未启用 — 使用本地模拟', 'info');
-      return false;
-    }
-    const auth = await apiAuth.guest(get().userId);
-    if (auth.code !== 0 || !auth.data) {
-      get().showToast(`后端鉴权失败: ${auth.message}`, 'warning');
-      return false;
-    }
-    const token = auth.data.token;
-    const canonicalUserId = auth.data.user?.id ?? get().userId;
-    set({ authToken: token, backendMode: true, wsStatus: 'connecting', userId: canonicalUserId });
-    console.log('[connectBackend] guest userId=', canonicalUserId);
+    connectBackendInFlight = (async (): Promise<boolean> => {
+      const { apiAuth, pingBackend, apiMarket } = apiService;
 
-    const sock = wsSvc.connect();
-
-    wsSvc.on('market:tick', (payload) => get()._applyServerTick(payload));
-    wsSvc.on('market:news', (news) => get()._applyServerNews(news));
-    wsSvc.on('market:special', (payload) => get()._applyServerBlackSwan(payload));
-    wsSvc.on('market:update', (payload) => get()._applyServerMarketUpdate(payload));
-    wsSvc.on('trade:result', (payload) => get()._applyTradeResult(payload));
-    wsSvc.on('dealer:result', (payload) => get()._applyDealerResult(payload));
-    wsSvc.on('regulator:result', (payload) => get()._applyRegulatorResult(payload));
-    wsSvc.on('regulator:freeze', (payload) => get()._applyRegulatorFreeze(payload));
-    wsSvc.on('regulator:warn', (payload) => get()._applyRegulatorFreeze({ ...payload, restrictionType: 'warn' }));
-    wsSvc.on('regulator:kick', (payload) => get()._applyRegulatorKick(payload));
-    wsSvc.on('match:tick', (payload) => get()._applyMatchTick(payload));
-    wsSvc.on('match:snapshot', (snap) => get()._applyServerSnapshot(snap));
-    wsSvc.on('match:end', (payload) => get()._applyMatchEnd(payload));
-    wsSvc.on('match:disconnect-warning', (p) => get()._handleDisconnectWarning(p));
-    wsSvc.on('match:peer-disconnect', () => {
-      get().showToast('对手断线，等待重连…', 'warning');
-    });
-    wsSvc.on('match:forfeit', (p) => get()._handleMatchForfeit(p));
-    wsSvc.on('match:destroyed', (p) => get()._handleMatchDestroyed(p));
-    wsSvc.on('match:timeout', (p) => { get()._handleMatchTimeout(p); });
-    wsSvc.on('room:update', (p) => get()._handleRoomUpdate(p));
-    wsSvc.on('room:ready', (p) => {
-      set((s) => ({
-        gameStatus: 'waiting',
-        waitingRoom: s.waitingRoom
-          ? { ...s.waitingRoom, currentPlayers: p.currentPlayers, requiredPlayers: p.requiredPlayers }
-          : {
-              code: p.code ?? null,
-              currentPlayers: p.currentPlayers,
-              requiredPlayers: p.requiredPlayers,
-              countdown: null,
-              mode: p.mode ?? 'room',
-            },
-      }));
-    });
-    wsSvc.on('room:countdown', (p) => get()._handleRoomCountdown(p));
-    wsSvc.on('match:start', (p) => { void get()._handleMatchStart(p); });
-    wsSvc.on('room:closed', (p) => {
-      get().showToast(p?.message ?? '房间已关闭', 'warning');
-      get()._resetMatchToIdle();
-    });
-    wsSvc.on('match:downgrade', (p) => {
-      get().showToast(p?.message ?? '对局已降级为双人对战', 'info');
-    });
-
-    wsSvc.onWsStatus((s) => {
-      set({ wsStatus: s });
-      const st = get();
-      if (s === 'disconnected' && st.matchId && st.gameStatus === 'playing') {
-        get().showModal('disconnect', '连接中断，30秒内重连将保留对局', '连接中断');
-        get().showToast('连接中断，30秒内重连将保留对局', 'warning');
+      const ok = await pingBackend();
+      if (!ok) {
+        console.warn('[connectBackend] pingBackend failed');
+        get().showToast('后端未启用 — 使用本地模拟', 'info');
+        return false;
       }
-      if (s === 'connected' && st.matchId && st.backendMode) {
-        void get()._attemptReconnectMatch();
+      const auth = await apiAuth.guest(get().userId);
+      if (auth.code !== 0 || !auth.data) {
+        console.warn('[connectBackend] guest auth failed', auth);
+        get().showToast(`后端鉴权失败: ${auth.message}`, 'warning');
+        return false;
       }
-    });
+      const token = auth.data.token;
+      const canonicalUserId = auth.data.user?.id ?? get().userId;
+      // REST 已通就算 backendMode=true；WS 失败不应再降级成 local simulation
+      set({ authToken: token, backendMode: true, wsStatus: 'connecting', userId: canonicalUserId });
+      console.log('[connectBackend] guest userId=', canonicalUserId);
 
-    const onConnect = async () => {
-      try {
-        const ack = await wsSvc.auth(token);
-        if (ack?.ok) {
-          get().showToast('后端已连接', 'success');
-          const mid = get().matchId;
-          if (mid) await get()._attemptReconnectMatch();
-        } else {
-          get().showToast('WS 鉴权失败', 'warning');
+      const sock = wsSvc.connect();
+
+      wsSvc.on('market:tick', (payload) => get()._applyServerTick(payload));
+      wsSvc.on('market:news', (news) => get()._applyServerNews(news));
+      wsSvc.on('market:special', (payload) => get()._applyServerBlackSwan(payload));
+      wsSvc.on('market:update', (payload) => get()._applyServerMarketUpdate(payload));
+      wsSvc.on('trade:result', (payload) => get()._applyTradeResult(payload));
+      wsSvc.on('dealer:result', (payload) => get()._applyDealerResult(payload));
+      wsSvc.on('regulator:result', (payload) => get()._applyRegulatorResult(payload));
+      wsSvc.on('regulator:freeze', (payload) => get()._applyRegulatorFreeze(payload));
+      wsSvc.on('regulator:warn', (payload) => get()._applyRegulatorFreeze({ ...payload, restrictionType: 'warn' }));
+      wsSvc.on('regulator:kick', (payload) => get()._applyRegulatorKick(payload));
+      wsSvc.on('match:tick', (payload) => get()._applyMatchTick(payload));
+      wsSvc.on('match:snapshot', (snap) => get()._applyServerSnapshot(snap));
+      wsSvc.on('match:end', (payload) => get()._applyMatchEnd(payload));
+      wsSvc.on('match:disconnect-warning', (p) => get()._handleDisconnectWarning(p));
+      wsSvc.on('match:peer-disconnect', () => {
+        get().showToast('对手断线，等待重连…', 'warning');
+      });
+      wsSvc.on('match:forfeit', (p) => get()._handleMatchForfeit(p));
+      wsSvc.on('match:destroyed', (p) => get()._handleMatchDestroyed(p));
+      wsSvc.on('match:timeout', (p) => { get()._handleMatchTimeout(p); });
+      wsSvc.on('room:update', (p) => get()._handleRoomUpdate(p));
+      wsSvc.on('room:ready', (p) => {
+        set((s) => ({
+          gameStatus: 'waiting',
+          waitingRoom: s.waitingRoom
+            ? { ...s.waitingRoom, currentPlayers: p.currentPlayers, requiredPlayers: p.requiredPlayers }
+            : {
+                code: p.code ?? null,
+                currentPlayers: p.currentPlayers,
+                requiredPlayers: p.requiredPlayers,
+                countdown: null,
+                mode: p.mode ?? 'room',
+              },
+        }));
+      });
+      wsSvc.on('room:countdown', (p) => get()._handleRoomCountdown(p));
+      wsSvc.on('match:start', (p) => { void get()._handleMatchStart(p); });
+      wsSvc.on('room:closed', (p) => {
+        get().showToast(p?.message ?? '房间已关闭', 'warning');
+        get()._resetMatchToIdle();
+      });
+      wsSvc.on('match:downgrade', (p) => {
+        get().showToast(p?.message ?? '对局已降级为双人对战', 'info');
+      });
+
+      wsSvc.onWsStatus((s) => {
+        set({ wsStatus: s });
+        const st = get();
+        if (s === 'disconnected' && st.matchId && st.gameStatus === 'playing') {
+          get().showModal('disconnect', '连接中断，30秒内重连将保留对局', '连接中断');
+          get().showToast('连接中断，30秒内重连将保留对局', 'warning');
         }
-      } catch (err) {
-        console.error('[connectBackend] auth error', err);
-        get().showToast(`WS 鉴权异常: ${(err as Error).message}`, 'danger');
-      }
-    };
-    sock.on('connect', onConnect);
-    if (sock.connected) onConnect();
+        if (s === 'connected' && st.matchId && st.backendMode) {
+          void get()._attemptReconnectMatch();
+        }
+      });
 
-    apiMarket.stocks().then((r) => {
-      if (r.code === 0 && Array.isArray(r.data)) {
-        set({ allStocks: r.data as any });
-      }
+      const onConnect = async () => {
+        try {
+          const ack = await wsSvc.auth(token);
+          if (ack?.ok) {
+            get().showToast('后端已连接', 'success');
+            const mid = get().matchId;
+            if (mid) await get()._attemptReconnectMatch();
+          } else {
+            get().showToast('WS 鉴权失败', 'warning');
+          }
+        } catch (err) {
+          console.error('[connectBackend] auth error', err);
+          get().showToast(`WS 鉴权异常: ${(err as Error).message}`, 'danger');
+        }
+      };
+      sock.on('connect', onConnect);
+      if (sock.connected) onConnect();
+
+      apiMarket.stocks().then((r) => {
+        if (r.code === 0 && Array.isArray(r.data)) {
+          set({ allStocks: r.data as any });
+        }
+      });
+
+      return true;
+    })().finally(() => {
+      connectBackendInFlight = null;
     });
 
-    return true;
+    return connectBackendInFlight;
   },
 
   disconnectBackend: () => {
-    import('../services/wsService').then((wsSvc) => {
-      wsSvc.disconnect();
-    });
+    wsSvc.disconnect();
+    connectBackendInFlight = null;
     set({ backendMode: false, wsStatus: 'idle', authToken: null, matchId: null });
   },
 

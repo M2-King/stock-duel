@@ -50,11 +50,14 @@
  */
 
 import { io, Socket } from 'socket.io-client';
-import { EFFECTIVE_WS_URL } from '../config';
-
-const WS_URL = EFFECTIVE_WS_URL;
+import { getWsNamespace, SOCKET_IO_PATH } from '../config';
 
 export type WsStatus = 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error';
+
+/** Socket.IO 连接目标：localhost → http://localhost:3000/game；服务器 → /game */
+function resolveWsUrl(): string {
+  return getWsNamespace();
+}
 
 let socket: Socket | null = null;
 let status: WsStatus = 'idle';
@@ -96,7 +99,8 @@ export function onWsStatus(fn: (s: WsStatus) => void): () => void {
 export function connect(): Socket {
   if (socket && socket.connected) return socket;
   if (!socket) {
-    socket = io(WS_URL, {
+    socket = io(resolveWsUrl(), {
+      path: SOCKET_IO_PATH,
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionDelay: 800,
@@ -294,4 +298,4 @@ export function sendRegulatorAction(payload: { matchId: string; alertId: string;
   getSocket().emit('regulator:action', payload);
 }
 
-export const WS_BASE = WS_URL;
+export const WS_BASE = resolveWsUrl();
