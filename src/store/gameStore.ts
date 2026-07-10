@@ -864,12 +864,11 @@ simulation: {
     dealerInfo: info,
     dealerResources: info
       ? {
-          cash: info.resources.cash ?? s.cash,
+          cash: s.cash,
           energy: info.resources.energy,
           riskIndex: info.resources.riskIndex,
         }
       : null,
-    ...(info ? { cash: info.resources.cash ?? s.cash, playerCash: info.resources.cash ?? s.cash } : {}),
   })),
   
   updateQuote: (quote) => set((s) => ({ currentQuote: { ...s.currentQuote, ...quote } })),
@@ -2435,7 +2434,7 @@ simulation: {
 
     // Dealer energy regen 已移除 — 取消 energy 机制后庄家只受 cash 约束
     const regenDealerResources = state.dealerResources
-      ? { ...state.dealerResources, energy: 0 }
+      ? { ...state.dealerResources, cash: state.cash, energy: 0 }
       : null;
 
     const sym2 = state.currentQuote.symbol;
@@ -3206,7 +3205,7 @@ simulation: {
       leverage: portfolio.leverage ?? state.leverage,
       dealerResources: dr
         ? { cash, energy: dr.energy ?? 0, riskIndex: dr.riskIndex ?? 0 }
-        : state.dealerResources,
+        : { cash, energy: 0, riskIndex: 0 },
       dealerInfo: state.dealerInfo
         ? {
             ...state.dealerInfo,

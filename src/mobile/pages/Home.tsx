@@ -13,6 +13,7 @@ import { useGameStore } from '../../store/gameStore';
 import type { MobileTab } from '../components/BottomNav';
 import MobileSparkline from '../components/Sparkline';
 import MobileRolePill from '../components/RolePill';
+import CashBalance from '../components/CashBalance';
 
 interface Props {
   onTabChange: (tab: MobileTab) => void;
@@ -37,7 +38,6 @@ export default function MobileHome({ onTabChange, onOpenMatch }: Props) {
 
   const todayPnl = useGameStore((s) => s.todayPnl);
   const todayPnlPercent = useGameStore((s) => s.todayPnlPercent);
-  const cash = useGameStore((s) => s.cash);
   const riskIndex = useGameStore((s) => s.dealerResources?.riskIndex ?? 0);
 
   const currentQuote = useGameStore((s) => s.currentQuote);
@@ -175,7 +175,7 @@ export default function MobileHome({ onTabChange, onOpenMatch }: Props) {
               <>
                 <div className="m-card-row">
                   <span className="label">可用资金</span>
-                  <span className="value m-mono">¥{cash.toLocaleString()}</span>
+                  <CashBalance />
                 </div>
                 <div className="m-card-row">
                   <span className="label">风险指数</span>

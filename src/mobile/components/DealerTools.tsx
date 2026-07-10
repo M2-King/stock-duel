@@ -8,6 +8,8 @@ import { memo, useCallback, useEffect, useState } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import { get } from '../../services/apiService';
 import { useTheme } from '../hooks/useTheme';
+import { usePlayerCash } from '../hooks/usePlayerCash';
+import CashBalance from './CashBalance';
 import {
   previewDealerAction,
   formatDealerCost,
@@ -49,15 +51,14 @@ function buildLocalPreview(id: ToolType, symbol: string, power: number): Preview
   return { cost: p.cost, effectLabel: p.effectLabel };
 }
 
-/** 仅资金/风险条 — cash 与交易共用 player.cash */
+/** 仅资金/风险条 — 与 Trade 页共用 store.cash */
 const DealerResourceBar = memo(function DealerResourceBar() {
-  const cash = useGameStore((s) => s.cash);
   const risk = useGameStore((s) => s.dealerResources?.riskIndex ?? 0);
   return (
     <section className="m-card" style={{ margin: '0 16px 12px', padding: '12px 14px' }}>
       <div className="m-card-row" style={{ borderTop: 'none', padding: '4px 0' }}>
         <span className="label">可用资金</span>
-        <span className="value m-mono">{formatDealerCost(cash)}</span>
+        <CashBalance />
       </div>
       <div className="m-card-row" style={{ padding: '4px 0' }}>
         <span className="label">风险</span>
@@ -87,7 +88,6 @@ interface ToolCardProps {
   tool: Tool;
   power: number;
   preview: Preview;
-  cash: number;
   backendMode: boolean;
   blockedByLimit: boolean;
   theme: 'light' | 'dark';
@@ -100,7 +100,6 @@ const DealerToolCard = memo(function DealerToolCard({
   tool,
   power,
   preview,
-  cash,
   backendMode,
   blockedByLimit,
   theme,
@@ -108,6 +107,7 @@ const DealerToolCard = memo(function DealerToolCard({
   onPowerCommit,
   onUse,
 }: ToolCardProps) {
+  const cash = usePlayerCash();
   const cost = preview.cost;
   const tooExpensive = !backendMode && cash < cost && cost > 0;
   const disabled = blockedByLimit || tooExpensive;
@@ -173,7 +173,7 @@ interface Props {
 }
 
 export default function MobileDealerTools({ symbol }: Props) {
-  const cash = useGameStore((s) => s.cash);
+  const cash = usePlayerCash();
   const executeDealerAction = useGameStore((s) => s.executeDealerAction);
   const backendMode = useGameStore((s) => s.backendMode);
   const price = useGameStore((s) => s.currentQuote.price);
@@ -273,7 +273,6 @@ export default function MobileDealerTools({ symbol }: Props) {
             tool={t}
             power={powerMap[t.id]}
             preview={previewMap[t.id]}
-            cash={cash}
             backendMode={backendMode}
             blockedByLimit={(t.id === 'pump' && isUpper) || (t.id === 'press' && isLower)}
             theme={theme}

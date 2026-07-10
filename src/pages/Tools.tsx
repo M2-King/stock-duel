@@ -42,7 +42,6 @@ function ToolsLobby({
   const startSoloMatch = useGameStore((s) => s.startSoloMatch);
   const cash = useGameStore((s) => s.cash);
   const currentSymbol = useGameStore((s) => s.currentQuote.symbol);
-  const dealerCash = cash;
   const power = 50;
 
   const flashFeedback = (kind: 'success' | 'error' | 'info', msg: string) => {
@@ -140,7 +139,7 @@ function ToolsLobby({
             ? previewDealerAction(tool.id, currentSymbol, power)
             : null;
           const cost = preview?.cost ?? 0;
-          const tooExpensive = isDealerTool && dealerCash < cost;
+          const tooExpensive = isDealerTool && cash < cost;
           const effectLabel = preview ? formatDealerEffectLabel(tool.id, preview.effectPct) : '';
 
           return (

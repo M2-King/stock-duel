@@ -12,6 +12,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import MobileChart from '../components/Chart';
 import MobileDealerTools from '../components/DealerTools';
+import CashBalance from '../components/CashBalance';
+import { usePlayerCash } from '../hooks/usePlayerCash';
+import { formatMobileCash } from '../utils/formatCash';
 import type { MobileTab } from '../components/BottomNav';
 
 const PERCENT_PRESETS = [25, 50, 75, 100] as const;
@@ -23,7 +26,7 @@ export default function MobileTrade() {
 
   // 散户分支
   const currentQuote = useGameStore((s) => s.currentQuote);
-  const cash = useGameStore((s) => s.cash);
+  const cash = usePlayerCash();
   const leverage = useGameStore((s) => s.leverage);
   const placeOrder = useGameStore((s) => s.placeOrder);
   const backendMode = useGameStore((s) => s.backendMode);
@@ -193,6 +196,12 @@ export default function MobileTrade() {
           <span className="label">我的持仓</span>
           <span className="value m-mono">{ownedShares.toLocaleString()} 股 · ¥{positionValue.toLocaleString()}</span>
         </div>
+        {isDealerPlaying && (
+          <div className="m-card-row">
+            <span className="label">可用资金</span>
+            <CashBalance />
+          </div>
+        )}
       </section>
 
       <MobileChart symbol={currentQuote.symbol} />
@@ -269,7 +278,7 @@ export default function MobileTrade() {
         <div className="m-card-row">
           <span className="label">{side === 'buy' ? '可用现金' : '可用持仓'}</span>
           <span className="value m-mono">
-            {side === 'buy' ? `¥${cash.toLocaleString()}` : `${ownedShares.toLocaleString()} 股`}
+            {side === 'buy' ? formatMobileCash(cash) : `${ownedShares.toLocaleString()} 股`}
           </span>
         </div>
       </section>

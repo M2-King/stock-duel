@@ -39,7 +39,7 @@ interface ToolPreview {
 
 export default function DealerPanelPage() {
   const {
-    currentQuote, dealerResources, cash: playerCash, insiderData, executeDealerAction,
+    currentQuote, insiderData, executeDealerAction,
     allStocks, stockPrices, selectSymbol, showToast, backendMode,
     getStockRestriction, currentTick,
   } = useGameStore();
@@ -57,8 +57,8 @@ export default function DealerPanelPage() {
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error' | 'info'; msg: string } | null>(null);
   const [flashTool, setFlashTool] = useState<ToolType | null>(null);
 
-  const cash = playerCash;
-  const risk = dealerResources?.riskIndex ?? 0;
+  const cash = useGameStore((s) => s.cash);
+  const risk = useGameStore((s) => s.dealerResources?.riskIndex ?? 0);
   const symbol = currentQuote.symbol;
   const stockRestriction = getStockRestriction(symbol);
   const toolsLocked = !!stockRestriction;
