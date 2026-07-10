@@ -103,8 +103,9 @@ interface ToolCardProps {
   tool: Tool;
   power: number;
   preview: Preview;
-  backendMode: boolean;
   blockedByLimit: boolean;
+  busy: boolean;
+  executing: boolean;
   theme: 'light' | 'dark';
   onPowerChange: (id: ToolType, v: number) => void;
   onPowerCommit: (id: ToolType) => void;
@@ -116,15 +117,17 @@ const DealerToolCard = memo(function DealerToolCard({
   power,
   preview,
   blockedByLimit,
+  busy,
+  executing,
   theme,
   onPowerChange,
   onPowerCommit,
   onUse,
-}: Omit<ToolCardProps, 'backendMode'>) {
+}: ToolCardProps) {
   const { cash } = useDealerResources();
   const cost = preview.cost;
   const tooExpensive = cash < cost && cost > 0;
-  const disabled = blockedByLimit || tooExpensive;
+  const disabled = blockedByLimit || tooExpensive || busy;
 
   return (
     <div
@@ -174,9 +177,26 @@ const DealerToolCard = memo(function DealerToolCard({
           marginTop: 8,
           background: disabled ? 'var(--m-surface-2)' : tool.accent,
           color: disabled ? 'var(--m-text-3)' : (theme === 'light' ? '#fff' : '#0a0a0a'),
+          opacity: executing ? 0.85 : 1,
         }}
       >
-        {blockedByLimit ? (tool.id === 'pump' ? '已涨停' : '已跌停') : tooExpensive ? '资金不足' : 'Use'}
+        {executing ? (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span
+              className="m-tool-spinner"
+              style={{
+                width: 14,
+                height: 14,
+                border: '2px solid currentColor',
+                borderTopColor: 'transparent',
+                borderRadius: '50%',
+                display: 'inline-block',
+                animation: 'm-spin 0.7s linear infinite',
+              }}
+            />
+            执行中…
+          </span>
+        ) : blockedByLimit ? (tool.id === 'pump' ? '已涨停' : '已跌停') : tooExpensive ? '资金不足' : busy ? '请稍候' : 'Use'}
       </button>
     </div>
   );
@@ -208,6 +228,8 @@ export default function MobileDealerTools({ symbol }: Props) {
     return m;
   });
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; msg: string } | null>(null);
+  const [executingId, setExecutingId] = useState<ToolType | null>(null);
+  const showToast = useGameStore((s) => s.showToast);
 
   // 打开操盘面板时从后端拉真值 cash，避免与 Tools 显示脱节
   useEffect(() => {
@@ -257,6 +279,7 @@ export default function MobileDealerTools({ symbol }: Props) {
   }, [powerMap, refreshPreview]);
 
   const onUse = useCallback(async (tool: Tool) => {
+    if (executingId) return;
     const power = powerMap[tool.id];
     const cost = previewMap[tool.id]?.cost ?? 0;
     if ((tool.id === 'pump' && isUpper) || (tool.id === 'press' && isLower)) {
@@ -264,33 +287,35 @@ export default function MobileDealerTools({ symbol }: Props) {
       setTimeout(() => setFeedback(null), 1500);
       return;
     }
-    let spendable = cash;
-    if (backendGame) {
-      const { refreshPortfolioFromServer } = useGameStore.getState();
-      const synced = await refreshPortfolioFromServer();
-      if (!synced) {
-        setFeedback({ kind: 'error', msg: '无法同步服务器资金，请稍后重试' });
-        setTimeout(() => setFeedback(null), 1800);
-        return;
-      }
-      spendable = useGameStore.getState().cash;
-    }
-    if (spendable < cost) {
-      setFeedback({ kind: 'error', msg: `资金不足：需要 ${formatDealerCost(cost)}，可用 ${formatDealerCost(spendable)}` });
+    if (cash < cost) {
+      setFeedback({ kind: 'error', msg: `资金不足：需要 ${formatDealerCost(cost)}，可用 ${formatDealerCost(cash)}` });
       setTimeout(() => setFeedback(null), 1500);
       return;
     }
-    const r = await Promise.resolve(executeDealerAction({ type: tool.id, power, cost }));
-    if (r?.success) {
-      if (!backendGame) {
+
+    setExecutingId(tool.id);
+    setFeedback({ kind: 'success', msg: `${tool.cn} 执行中…` });
+
+    try {
+      const r = await executeDealerAction({ type: tool.id, power, cost });
+      if (r?.success) {
         setFeedback({ kind: 'success', msg: `${tool.cn} 成功 — ${formatDealerCost(cost)}` });
+        showToast(`${tool.cn} 执行成功`, 'success');
         refreshPreview(tool.id, power);
+      } else {
+        const err = r?.error || '执行失败';
+        setFeedback({ kind: 'error', msg: err });
+        showToast(err, 'danger');
       }
-    } else {
-      setFeedback({ kind: 'error', msg: r?.error || '执行失败' });
+    } catch (e) {
+      const err = (e as Error).message || '执行失败';
+      setFeedback({ kind: 'error', msg: err });
+      showToast(err, 'danger');
+    } finally {
+      setExecutingId(null);
+      setTimeout(() => setFeedback(null), 1800);
     }
-    setTimeout(() => setFeedback(null), 1800);
-  }, [powerMap, previewMap, isUpper, isLower, cash, backendGame, executeDealerAction, refreshPreview]);
+  }, [powerMap, previewMap, isUpper, isLower, cash, executeDealerAction, refreshPreview, executingId, showToast]);
 
   return (
     <div className="m-dealer-tools">
@@ -306,6 +331,8 @@ export default function MobileDealerTools({ symbol }: Props) {
             power={powerMap[t.id]}
             preview={previewMap[t.id]}
             blockedByLimit={(t.id === 'pump' && isUpper) || (t.id === 'press' && isLower)}
+            busy={executingId !== null}
+            executing={executingId === t.id}
             theme={theme}
             onPowerChange={onPowerChange}
             onPowerCommit={onPowerCommit}

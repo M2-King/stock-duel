@@ -3,17 +3,13 @@ import { STOCK_SEED, STOCK_MAP, PRICE_FLOOR } from './stocks.seed';
 import { NEWS_POOL, BLACK_SWAN_EVENTS, makeNewsItem, NewsSeed } from './news.pool';
 import { computeIndicators, Indicators } from './indicators.util';
 import { Quote, KLine, OrderBook, NewsItem } from '../common/types';
+import { applyMultiFreqPriceStep } from '../common/price-simulation';
 
 /**
  * 全局行情引擎 — 内存态。
  *
- * 每 200ms 一个 tick，对每个活跃 symbol 跑一次 GBM：
- *   delta = drift (rand-0.48)*sigma + noise (rand-0.5)*sigma*0.5 + meanReversion
- *   price *= 1 + delta
- *   其中 meanReversion = -deviation*0.01（仅当 |deviation| > 5% 时）
- *
- * sigma = 0.06（每 200ms tick 波动更明显；对局仍 120 tick/天 × 3s）
- *   自然走势有波动有回调，庄家拉升在自然噪声里"显得只是顺势"
+ * 每 200ms 一个 tick，对每个活跃 symbol 跑多频率叠加模型（见 common/price-simulation.ts）：
+ *   highFreq ±0.005 + midFreq sin(t/30)*0.02 + lowFreq sin(t/120)*0.01 + 均值回归
  *
  * 地板价 = 1 元/股；涨跌停 = prevClose * ±10% hard clamp。
  *
@@ -50,13 +46,10 @@ export class MarketEngine {
     orderBook: OrderBook; events: any[];
   }>>();
 
-  /** tick 序号（全局） */
+  /** tick 序号（全局，200ms 一步；用于多频率 sin 相位） */
   private globalTick = 0;
   /** 每对局 tick 序号 */
   private matchTicks = new Map<string, number>();
-
-  /** Per-tick GBM volatility — visible intraday moves; 120 game ticks/day unchanged */
-  private static readonly GBM_SIGMA = 0.06;
 
   /** Per-symbol turnover: recent tick amounts + daily sums for dynamic regulatory limits. */
   private turnoverHistory = new Map<string, { recentTicks: number[]; dailyByDay: Map<number, number> }>();
@@ -293,7 +286,7 @@ export class MarketEngine {
     // 这里用 STOCK_MAP 作为全量来源，确保推送侧与前端 watchlist 的 symbol 集合一致。
     // sigma 0.03：分时线有明显起伏，庄家拉升仍能被自然噪声部分掩盖
     const symbols = Object.keys(STOCK_MAP);
-    for (const sym of symbols) this.gbmStep(sym, MarketEngine.GBM_SIGMA);
+    for (const sym of symbols) this.gbmStep(sym);
 
     // 5 tick 更新盘口
     if (this.globalTick % 5 === 0) {
@@ -324,25 +317,17 @@ export class MarketEngine {
     }
   }
 
-  private gbmStep(symbol: string, sigma: number) {
+  private gbmStep(symbol: string) {
     const s = this.state.get(symbol);
     if (!s) return;
     const prevVolume = s.quote.volume;
-    const upper = s.quote.prevClose * 1.10;
-    const lower = s.quote.prevClose * 0.90;
     const refOpen = s.quote.open > 0 ? s.quote.open : s.quote.prevClose;
-
-    // ⛳ GBM：sigma≈0.03 → 自然波动更明显；均值回归防止长期单边漂移
-    const drift = (Math.random() - 0.48) * sigma;
-    const noise = (Math.random() - 0.5) * sigma * 0.5;
-    const deviation = (s.quote.price - refOpen) / refOpen; // 正=高于开盘
-    const meanReversion = Math.abs(deviation) > 0.05
-      ? -deviation * 0.01
-      : 0;
-    const delta = drift + noise + meanReversion;
-    let next = Math.max(PRICE_FLOOR, s.quote.price * (1 + delta));
-    if (next > upper) next = upper;
-    if (next < lower) next = lower;
+    const next = applyMultiFreqPriceStep(
+      s.quote.price,
+      this.globalTick,
+      s.quote.prevClose,
+      { refOpen, meanReversion: true },
+    );
     s.quote.price = next;
     s.quote.change = next - s.quote.prevClose;
     s.quote.changePercent = (s.quote.change / s.quote.prevClose) * 100;

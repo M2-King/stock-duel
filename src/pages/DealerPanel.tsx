@@ -58,6 +58,7 @@ export default function DealerPanelPage() {
   });
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error' | 'info'; msg: string } | null>(null);
   const [flashTool, setFlashTool] = useState<ToolType | null>(null);
+  const [executingId, setExecutingId] = useState<ToolType | null>(null);
 
   // 资金单一来源 — useDealerResources 与 Tools 页 / TradePanel 永远一致
   const { cash, riskIndex: risk } = useDealerResources();
@@ -147,21 +148,30 @@ export default function DealerPanelPage() {
   };
 
   const handleUseTool = async (tool: Tool) => {
+    if (executingId) return;
     const power = powerMap[tool.id];
     const { cost } = previewMap[tool.id];
     if (cash < cost) {
       flashFeedback('error', `资金不足：需要 ${formatDealerCost(cost)}，可用 ${formatDealerCost(cash)}`, tool.id);
       return;
     }
-    const result = await Promise.resolve(executeDealerAction({
-      type: tool.id,
-      power,
-      cost,
-    }));
-    if (result?.success) {
-      flashFeedback('success', `${tool.cn} 执行成功 — 花费 ${formatDealerCost(cost)}`, tool.id);
-    } else {
-      flashFeedback('error', result?.error || '执行失败', tool.id);
+    setExecutingId(tool.id);
+    flashFeedback('info', `${tool.cn} 执行中…`, tool.id);
+    try {
+      const result = await executeDealerAction({
+        type: tool.id,
+        power,
+        cost,
+      });
+      if (result?.success) {
+        flashFeedback('success', `${tool.cn} 执行成功 — 花费 ${formatDealerCost(cost)}`, tool.id);
+        showToast(`${tool.cn} 执行成功`, 'success');
+      } else {
+        flashFeedback('error', result?.error || '执行失败', tool.id);
+        showToast(result?.error || '执行失败', 'danger');
+      }
+    } finally {
+      setExecutingId(null);
     }
   };
 
@@ -278,11 +288,14 @@ export default function DealerPanelPage() {
                 const tooExpensive = cash < cost;
                 const blocked = (tool.id === 'pump' && isUpperLimit)
                              || (tool.id === 'press' && isLowerLimit);
-                const disabled = tooExpensive || blocked || toolsLocked;
+                const disabled = tooExpensive || blocked || toolsLocked || executingId !== null;
                 const isFlashing = flashTool === tool.id;
-                const btnLabel = toolsLocked ? `锁定 ${lockRemaining}t`
+                const isExecuting = executingId === tool.id;
+                const btnLabel = isExecuting ? '执行中…'
+                  : toolsLocked ? `锁定 ${lockRemaining}t`
                   : tooExpensive ? '资金不足'
                   : blocked ? (tool.id === 'pump' ? '已涨停' : '已跌停')
+                  : executingId ? '请稍候'
                   : 'Use';
                 return (
                   <div

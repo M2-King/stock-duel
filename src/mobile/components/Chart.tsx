@@ -14,6 +14,7 @@ import {
   resolveDayOpen,
   resolvePrevCloseForLimits,
 } from '../../shared/priceLimits';
+import { computeIntradayVwapSeries } from '../../shared/intradayVwap';
 
 type Period = '1D' | '1W' | '1M';
 
@@ -239,12 +240,19 @@ export default function MobileChart({ symbol: propSymbol }: Props) {
       };
     });
 
+    const avgPrices = computeIntradayVwapSeries(points);
+    const avgLinePath = avgPrices
+      .map((v, i) => `${i === 0 ? 'M' : 'L'} ${xScale(i).toFixed(1)} ${yScale(v).toFixed(1)}`)
+      .join(' ');
+    const lastAvg = avgPrices[n - 1] ?? open;
+
     const lastP = points[n - 1] ?? open;
     const up = lastP >= open;
 
     return {
       points, n, open, minVal, maxVal, range,
       xScale, yScale, linePath, areaPath, volBars, bw,
+      avgLinePath, lastAvg,
       lastP, up,
     };
   }, [isIntraday, intradayPoints, layout, dayOpen, limitUp, limitDown]);
@@ -502,6 +510,28 @@ export default function MobileChart({ symbol: propSymbol }: Props) {
               strokeLinejoin="round"
               strokeLinecap="round"
             />
+            {/* 均价线 VWAP */}
+            {intraGeom.avgLinePath && intraGeom.n >= 2 && (
+              <g>
+                <path
+                  d={intraGeom.avgLinePath}
+                  fill="none"
+                  stroke="#38bdf8"
+                  strokeWidth={1.2}
+                  strokeDasharray="4 2"
+                  opacity={0.9}
+                />
+                <text
+                  x={W - pad.r + 4}
+                  y={intraGeom.yScale(intraGeom.lastAvg) + 4}
+                  fill="#38bdf8"
+                  fontSize={9}
+                  fontFamily="ui-monospace, monospace"
+                >
+                  均价 {intraGeom.lastAvg.toFixed(2)}
+                </text>
+              </g>
+            )}
             {/* 最新价虚线 + 涨跌幅标签 */}
             {(() => {
               const yL = intraGeom.yScale(intraGeom.lastP);

@@ -13,6 +13,7 @@ import {
 } from '../shared/tradeLimits';
 import * as apiService from '../services/apiService';
 import * as wsSvc from '../services/wsService';
+import { applyMultiFreqPriceStep } from '../shared/priceSimulation';
 export { STOCK_META, getStockMeta, formatStockMetaLine } from '../shared/stockMeta';
 
 /** StrictMode 双调用时复用同一次 connectBackend，避免竞态 */
@@ -20,6 +21,12 @@ let connectBackendInFlight: Promise<boolean> | null = null;
 
 /** backend 模式：placeOrder 等待 trade:result 的一次性回调 */
 let pendingTradeResult: ((payload: any) => void) | null = null;
+
+/** backend 模式：executeDealerAction 等待 dealer:result 的一次性回调 */
+let pendingDealerResult: ((payload: any) => void) | null = null;
+
+let lastDealerActionAt = 0;
+const DEALER_ACTION_COOLDOWN_MS = 500;
 
 function waitForTradeResult(timeoutMs = 15000): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -32,6 +39,22 @@ function waitForTradeResult(timeoutMs = 15000): Promise<any> {
     pendingTradeResult = (payload) => {
       clearTimeout(timer);
       pendingTradeResult = null;
+      resolve(payload);
+    };
+  });
+}
+
+function waitForDealerResult(timeoutMs = 15000): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (pendingDealerResult) {
+        pendingDealerResult = null;
+        reject(new Error('庄家操作确认超时'));
+      }
+    }, timeoutMs);
+    pendingDealerResult = (payload) => {
+      clearTimeout(timer);
+      pendingDealerResult = null;
       resolve(payload);
     };
   });
@@ -674,8 +697,6 @@ function cashSyncPatch(
 }
 
 const TIMELINE_MAX_POINTS = 500;
-/** 本地 / 离线 GBM 波动率（与后端 GBM_SIGMA 同量级） */
-const LOCAL_GBM_SIGMA = 0.06;
 
 /** 行情推送：更新序列最后一个点，使图表末端与 headline 价格同步 */
 function patchTimelineLastPoint(timeline: number[], price: number): number[] {
@@ -1488,6 +1509,12 @@ simulation: {
    * 前端只做"显示 + 涨跌停 + 资金"预检，真正执行交给后端。
    */
   executeDealerAction: async ({ type, power, cost: advisoryCost }: { type: string; power: number; cost?: number }) => {
+    const now = Date.now();
+    if (now - lastDealerActionAt < DEALER_ACTION_COOLDOWN_MS) {
+      get().showToast('操作过快，请稍候', 'warning');
+      return { success: false, error: '冷却中' };
+    }
+
     const state = get();
     const symbol = state.currentQuote.symbol;
 
@@ -1518,7 +1545,11 @@ simulation: {
     let effectPct = 0;
     let riskIncrease = 0;
     const localPreview = previewDealerAction(type, symbol, power);
-    if (usesBackendGameState(state)) {
+    if (advisoryCost && advisoryCost > 0) {
+      realCost = advisoryCost;
+      effectPct = localPreview.effectPct;
+      riskIncrease = localPreview.riskIncrease;
+    } else if (usesBackendGameState(state)) {
       try {
         const api = await import('../services/apiService');
         const res = await api.get(`/api/dealer/preview-cost?type=${type}&power=${power}&symbol=${symbol}`);
@@ -1564,16 +1595,23 @@ simulation: {
       try {
         const ws = await import('../services/wsService');
         await ws.waitForAuth(8000);
+        const resultPromise = waitForDealerResult(15000);
         ws.sendDealerAction({
           matchId: state.matchId!,
           type: type as any,
           power,
           symbol,
         });
+        const result = await resultPromise;
+        lastDealerActionAt = Date.now();
+        if (result?.code !== 0) {
+          return { success: false, error: result?.message ?? '操盘失败' };
+        }
         return { success: true };
       } catch (err) {
-        get().showToast(`庄家指令发送失败: ${(err as Error).message}`, 'danger');
-        return { success: false, error: '发送失败' };
+        lastDealerActionAt = Date.now();
+        get().showToast(`庄家指令失败: ${(err as Error).message}`, 'danger');
+        return { success: false, error: (err as Error).message };
       }
     }
 
@@ -1712,9 +1750,9 @@ simulation: {
       set((s) => ({ simulation: { ...s.simulation, fakeOrderRestore: t } }));
     }
 
-    const labelMap: Record<string, string> = { pump: '拉升', press: '压价', accumulate: '吸筹', distribute: '出货', wash: '对敲', fake: '假挂单' };
-    get().showToast(`庄家${labelMap[type] || type}执行成功（花费 ¥${realCost.toLocaleString()}）`, 'info');
+    // 成功提示由 UI 层（DealerTools / DealerPanel）展示
 
+    lastDealerActionAt = Date.now();
     return { success: true };
   },
   
@@ -2528,22 +2566,16 @@ simulation: {
     let newPrice: number;
     let nextStockPrices: Record<string, number>;
     let newVolume: number;
-    const gbmStep = (prevPrice: number) => {
-      const sigma = LOCAL_GBM_SIGMA;
-      const drift = (Math.random() - 0.48) * sigma;
-      const noise = (Math.random() - 0.5) * sigma * 0.5;
+    const tickNum = state.currentTick;
+    const gbmStep = (prevPrice: number, symTick = tickNum) => {
       const prevClose = state.currentQuote.prevClose || prevPrice;
-      const upper = prevClose * 1.10;
-      const lower = prevClose * 0.90;
-      let next = Math.max(1, prevPrice * (1 + drift + noise));
-      if (next > upper) next = upper;
-      if (next < lower) next = lower;
-      return next;
+      const refOpen = state.currentQuote.open || prevClose;
+      return applyMultiFreqPriceStep(prevPrice, symTick, prevClose, { refOpen, meanReversion: true });
     };
     const gbmHeldSymbol = (sym: string): number => {
       const held = state.holdings.find((h) => h.symbol === sym);
       const prev = state.stockPrices[sym] ?? held?.avgPrice ?? held?.marketPrice ?? 1;
-      return gbmStep(prev);
+      return gbmStep(prev, tickNum);
     };
     if (isBackend) {
       // 后端模式：current symbol 用 server 推过来的价格（全量 prices 也已经在 _applyServerTick 更新）
@@ -3601,6 +3633,11 @@ simulation: {
 
   _applyDealerResult: (payload) => {
     if (!payload) return;
+    const hadWaiter = !!pendingDealerResult;
+    if (pendingDealerResult) {
+      pendingDealerResult(payload);
+      pendingDealerResult = null;
+    }
     if (payload.code !== 0) {
       console.warn('[Dealer] 后端返回错误', payload);
       if (payload.data?.portfolio) {
@@ -3608,7 +3645,9 @@ simulation: {
       } else {
         void get().refreshPortfolioFromServer();
       }
-      get().showToast(`庄家操作失败: ${payload.message ?? ''}`, 'warning');
+      if (!hadWaiter) {
+        get().showToast(`庄家操作失败: ${payload.message ?? ''}`, 'warning');
+      }
       return;
     }
     const { data } = payload;
@@ -3712,7 +3751,9 @@ simulation: {
         });
       }
     }
-    get().showToast(`庄家操作成功`, 'success');
+    if (!hadWaiter) {
+      get().showToast(`庄家操作成功`, 'success');
+    }
   },
 
   _applyRegulatorFreeze: (payload) => {

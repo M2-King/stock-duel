@@ -5,6 +5,7 @@ import {
   resolveDayOpen,
   resolvePrevCloseForLimits,
 } from '../shared/priceLimits';
+import { computeIntradayVwapSeries } from '../shared/intradayVwap';
 import './MarketChart.css';
 
 type Period = '1D' | '1W' | '1M' | '3M' | '1Y' | 'ALL';
@@ -120,8 +121,7 @@ function computeIntradayIndicators(points: number[]): IntradayIndicatorData {
   const ma10 = sma(points, 10);
   const ma20 = sma(points, 20);
 
-  let sum = 0;
-  const avgPrice = points.map((v, i) => { sum += v; return sum / (i + 1); });
+  const avgPrice = computeIntradayVwapSeries(points);
 
   const bollUpper: (number | null)[] = new Array(n).fill(null);
   const bollMid: (number | null)[] = new Array(n).fill(null);
