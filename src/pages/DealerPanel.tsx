@@ -128,6 +128,10 @@ export default function DealerPanelPage() {
   };
 
   useEffect(() => {
+    if (backendMode) {
+      const { matchId, refreshPortfolioFromServer } = useGameStore.getState();
+      if (matchId) void refreshPortfolioFromServer();
+    }
     (Object.keys(powerMap) as ToolType[]).forEach((id) => refreshPreview(id, powerMap[id]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, backendMode]);

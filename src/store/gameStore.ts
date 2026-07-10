@@ -257,6 +257,8 @@ interface SimulationState {
   /** Set true by startSimulation; guards session-close until the tick engine is armed. */
   _sessionInitialized?: boolean;
   _tickLogCount?: number;
+  /** Backend: last portfolio REST sync (ms) — keeps cash aligned with server */
+  _lastPortfolioRefresh?: number;
 }
 
 interface GameState {
@@ -411,6 +413,8 @@ interface GameState {
     todayPnlPercent?: number;
     leverage?: number;
   }, dealerResources?: { cash?: number; energy?: number; riskIndex?: number } | null) => void;
+  /** 从后端拉取 portfolio，用真值覆盖 store.cash（backend 模式操盘/交易前必调） */
+  refreshPortfolioFromServer: () => Promise<boolean>;
   _applyServerSnapshot: (snap: {
     matchId: string;
     role: string;
@@ -456,6 +460,7 @@ interface GameState {
   _attemptReconnectMatch: () => Promise<void>;
   _resetMatchToIdle: () => void;
   _joinBackendMatch: (matchId: string, role: string | null) => Promise<void>;
+  _resetCashForMatchEntry: () => void;
 
   // Actions
   setRole: (role: Role) => void;
@@ -976,6 +981,7 @@ simulation: {
       // 异步导入避免循环依赖；先 await socket 连上再 emit，避免 ack 误判。
       (async () => {
         try {
+          await get().refreshPortfolioFromServer();
           const ws = await import('../services/wsService');
           await ws.waitForAuth(8000);
           if (order.side === 'buy') ws.sendBuy(payload);
@@ -1456,16 +1462,20 @@ simulation: {
       riskIncrease = localPreview.riskIncrease;
     }
 
-    if (state.cash < realCost) {
-      get().showToast(`资金不足: 需要 ¥${realCost.toLocaleString()}，可用 ¥${state.cash.toLocaleString()}`, 'warning');
-      return { success: false, error: '资金不足' };
-    }
-
-    // ---- Backend mode: 发指令到 WS，cash 由 dealer:result 回填 ----
+    // ---- Backend mode: 先同步后端 cash，再发 WS（cash 由 dealer:result 回填） ----
     if (state.backendMode) {
       if (!state.matchId) {
         get().showToast('尚未加入对局', 'warning');
         return { success: false, error: '未入对局' };
+      }
+      await get().refreshPortfolioFromServer();
+      const freshCash = get().cash;
+      if (freshCash < realCost) {
+        get().showToast(
+          `资金不足: 需要 ¥${realCost.toLocaleString()}，可用 ¥${freshCash.toLocaleString()}`,
+          'warning',
+        );
+        return { success: false, error: '资金不足' };
       }
       try {
         const ws = await import('../services/wsService');
@@ -1484,6 +1494,11 @@ simulation: {
     }
 
     // ---- Local mode: 本地模拟（离线练习） ----
+    if (state.cash < realCost) {
+      get().showToast(`资金不足: 需要 ¥${realCost.toLocaleString()}，可用 ¥${state.cash.toLocaleString()}`, 'warning');
+      return { success: false, error: '资金不足' };
+    }
+
     const intensity = power / 100;
     let newPrice = state.currentQuote.price;
     let newVolume = state.currentQuote.volume;
@@ -3093,6 +3108,11 @@ simulation: {
     const activeSymbol = state.currentQuote.symbol;
     const now = Date.now();
 
+    const lastPortfolioRefresh = state.simulation._lastPortfolioRefresh ?? 0;
+    if (state.backendMode && state.gameStatus === 'playing' && now - lastPortfolioRefresh > 12_000) {
+      void get().refreshPortfolioFromServer();
+    }
+
     // 1. stockPrices（多 symbol mark-to-market 用 + 为 charts 提供实时序列）
     const stockPrices: Record<string, number> = { ...state.stockPrices };
     let updatedAny = false;
@@ -3230,28 +3250,10 @@ simulation: {
       holdings: [],
       orderHistory: [],
       stockDailyTraded: {},
-      // 庄家资源 reset：riskIndex/energy 归零，但 cash 保留，由 snapshot 覆盖
-      dealerResources: { cash: state.cash, energy: 0, riskIndex: 0 },
-      dealerInfo: state.dealerInfo
-        ? {
-            ...state.dealerInfo,
-            resources: {
-              ...state.dealerInfo.resources,
-              cash: state.cash,
-              energy: 0,
-              riskIndex: 0,
-            },
-          }
-        : {
-            resources: { cash: state.cash, energy: 0, riskIndex: 0 },
-            hiddenInfo: null,
-          },
+      ...cashSyncPatch(state, state.cash, { riskIndex: 0 }),
     });
   },
 
-  /**
-   * 用后端 portfolio 覆盖本地 cash / 持仓 — 不做前端推算。
-   */
   _syncPortfolioFromServer: (portfolio, dealerResources) => {
     if (!portfolio || typeof portfolio.cash !== 'number') return;
     const state = get();
@@ -3277,10 +3279,31 @@ simulation: {
     });
   },
 
-  /**
-   * server match:snapshot — 对局刚 join 上时给的全量。
-   * 覆盖当前 quote / klines / orderBook / indicators，并把 role 写回 store。
-   */
+  refreshPortfolioFromServer: async () => {
+    const state = get();
+    if (!state.backendMode || !state.matchId) return false;
+    try {
+      const res = await apiService.apiTrade.portfolio(state.matchId, state.userId);
+      if (res.code !== 0 || !res.data || typeof res.data.cash !== 'number') return false;
+
+      let dealerResources: { cash?: number; energy?: number; riskIndex?: number } | null = null;
+      if (state.role === 'dealer') {
+        const drRes = await apiService.apiDealer.resources(state.matchId, state.userId);
+        if (drRes.code === 0 && drRes.data) {
+          dealerResources = drRes.data;
+        }
+      }
+      get()._syncPortfolioFromServer(res.data, dealerResources);
+      set((s) => ({
+        simulation: { ...s.simulation, _lastPortfolioRefresh: Date.now() },
+      }));
+      return true;
+    } catch (err) {
+      console.warn('[portfolio] refresh failed', err);
+      return false;
+    }
+  },
+
   _applyServerSnapshot: (snap) => {
     if (!snap) return;
     const state = get();
@@ -3415,6 +3438,7 @@ simulation: {
     if (!payload) return;
     if (payload.code !== 0) {
       get().showToast(`交易失败: ${payload.message ?? '未知错误'}`, 'warning');
+      void get().refreshPortfolioFromServer();
       return;
     }
     const { side, data } = payload;
@@ -3445,6 +3469,7 @@ simulation: {
     if (!payload) return;
     if (payload.code !== 0) {
       console.warn('[Dealer] 后端返回错误', payload);
+      void get().refreshPortfolioFromServer();
       get().showToast(`庄家操作失败: ${payload.message ?? ''}`, 'warning');
       return;
     }

@@ -57,6 +57,12 @@ export default function MobileTrade() {
 
   useEffect(() => { setLev(leverage); }, [leverage]);
 
+  useEffect(() => {
+    if (!backendMode) return;
+    const { matchId, refreshPortfolioFromServer } = useGameStore.getState();
+    if (matchId) void refreshPortfolioFromServer();
+  }, [backendMode]);
+
   // Markets 页「买入/卖出」跳转时带上 side
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -198,7 +204,7 @@ export default function MobileTrade() {
         </div>
         {isDealerPlaying && (
           <div className="m-card-row">
-            <span className="label">可用资金</span>
+            <span className="label">可用现金</span>
             <CashBalance />
           </div>
         )}

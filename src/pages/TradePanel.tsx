@@ -11,7 +11,7 @@ export default function TradePanel() {
   const orderBook = useGameStore((s) => s.orderBook);
   const holdings = useGameStore((s) => s.holdings);
   // 资金单一来源 — useCashBalance 保证 cash/borrowed/leverage 永远和 Tools 页 / DealerPanel 同步
-  const { cash, borrowed, leverage, buyingPower } = useCashBalance();
+  const { cash, leverage, buyingPower } = useCashBalance();
   const setLeverage = useGameStore((s) => s.setLeverage);
   const placeOrder = useGameStore((s) => s.placeOrder);
   const purchaseInsiderInfo = useGameStore((s) => s.purchaseInsiderInfo);

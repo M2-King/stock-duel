@@ -6,10 +6,11 @@
 
 import { memo, useCallback, useEffect, useState } from 'react';
 import { useGameStore } from '../../store/gameStore';
-import { useDealerResources } from '../../hooks/useCashBalance';
+import { useDealerResources, useCashBalance } from '../../hooks/useCashBalance';
 import { get } from '../../services/apiService';
 import { useTheme } from '../hooks/useTheme';
 import CashBalance from './CashBalance';
+import { formatMobileCash } from '../utils/formatCash';
 import {
   previewDealerAction,
   formatDealerCost,
@@ -51,19 +52,33 @@ function buildLocalPreview(id: ToolType, symbol: string, power: number): Preview
   return { cost: p.cost, effectLabel: p.effectLabel };
 }
 
-/** 仅资金/风险条 — 与 Trade 页共用 useDealerResources */
+/** 资金拆解 — 操盘只扣「可用现金」，与 Trade / 持仓页同一数据源 */
 const DealerResourceBar = memo(function DealerResourceBar() {
   const { riskIndex: risk } = useDealerResources();
+  const { cash, positionValue, totalAssets } = useCashBalance();
   return (
     <section className="m-card" style={{ margin: '0 16px 12px', padding: '12px 14px' }}>
       <div className="m-card-row" style={{ borderTop: 'none', padding: '4px 0' }}>
-        <span className="label">可用资金</span>
+        <span className="label">可用现金</span>
         <CashBalance />
+      </div>
+      <div className="m-card-row" style={{ padding: '4px 0' }}>
+        <span className="label">持仓市值</span>
+        <span className="value m-mono">¥{formatMobileCash(positionValue)}</span>
+      </div>
+      <div className="m-card-row" style={{ padding: '4px 0' }}>
+        <span className="label">总资产</span>
+        <span className="value m-mono">¥{formatMobileCash(totalAssets)}</span>
       </div>
       <div className="m-card-row" style={{ padding: '4px 0' }}>
         <span className="label">风险</span>
         <span className={`value m-mono ${risk > 70 ? 'm-up' : ''}`}>{risk.toFixed(1)}%</span>
       </div>
+      {cash < 1_000_000 && totalAssets > cash + 1_000_000 && (
+        <p style={{ fontSize: 10, color: 'var(--m-text-3)', margin: '6px 0 0', lineHeight: 1.45 }}>
+          操盘工具只消耗现金。若总资产充足但现金不足，请先在交易页卖出持股变现。
+        </p>
+      )}
     </section>
   );
 });
@@ -100,16 +115,15 @@ const DealerToolCard = memo(function DealerToolCard({
   tool,
   power,
   preview,
-  backendMode,
   blockedByLimit,
   theme,
   onPowerChange,
   onPowerCommit,
   onUse,
-}: ToolCardProps) {
+}: Omit<ToolCardProps, 'backendMode'>) {
   const { cash } = useDealerResources();
   const cost = preview.cost;
-  const tooExpensive = !backendMode && cash < cost && cost > 0;
+  const tooExpensive = cash < cost && cost > 0;
   const disabled = blockedByLimit || tooExpensive;
 
   return (
@@ -195,6 +209,13 @@ export default function MobileDealerTools({ symbol }: Props) {
   });
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; msg: string } | null>(null);
 
+  // 打开操盘面板时从后端拉真值 cash，避免与 Tools 显示脱节
+  useEffect(() => {
+    if (!backendMode) return;
+    const { matchId, refreshPortfolioFromServer } = useGameStore.getState();
+    if (matchId) void refreshPortfolioFromServer();
+  }, [backendMode, symbol]);
+
   const refreshPreview = useCallback(async (id: ToolType, power: number) => {
     if (backendMode) {
       try {
@@ -243,8 +264,8 @@ export default function MobileDealerTools({ symbol }: Props) {
       setTimeout(() => setFeedback(null), 1500);
       return;
     }
-    if (!backendMode && cash < cost) {
-      setFeedback({ kind: 'error', msg: `资金不足：需要 ${formatDealerCost(cost)}` });
+    if (cash < cost) {
+      setFeedback({ kind: 'error', msg: `资金不足：需要 ${formatDealerCost(cost)}，可用 ${formatDealerCost(cash)}` });
       setTimeout(() => setFeedback(null), 1500);
       return;
     }
@@ -273,7 +294,6 @@ export default function MobileDealerTools({ symbol }: Props) {
             tool={t}
             power={powerMap[t.id]}
             preview={previewMap[t.id]}
-            backendMode={backendMode}
             blockedByLimit={(t.id === 'pump' && isUpper) || (t.id === 'press' && isLower)}
             theme={theme}
             onPowerChange={onPowerChange}
