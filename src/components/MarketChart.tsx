@@ -802,30 +802,23 @@ function CandlestickChart({
 
     const xScale = (i: number) => padding.left + (i / (WINDOW - 1)) * innerW;
     const open = points[0];
-    // Y 轴锚定到当日开盘价 (open)，并预留 ±5% 的固定跨度作为"正常波动带"。
-    // 这样 5% 的自然波动只占 Y 轴的一小段，1% 的拉升在视觉上就是 1%，不会被误判为 10%。
-    //   之前用窗口 min/max 自动 scale，120 点里 ±5% 波动吃满整个 Y 轴高度，
-    //   单根 K 线的 1% 涨幅占据 1/5 屏幕 → 监管模型和庄家都被"骗"了。
+    // ⛳ Y 轴范围**固定**为 [跌停, 涨停] = [open*0.9, open*1.1]。
+    //   涨跌停线永远贴在图表上下边缘，与当前价格无关。
+    //   之前用窗口 min/max 自动 scale，或 ±5% band，
+    //   都会让 1% 的价格在视觉上被放大成 10%，误导监管和庄家。
     let minVal: number;
     let maxVal: number;
     {
-      const spanPct = 0.05;                  // 上下各 5% 共 10% 跨度（容纳正常波动）
-      const floorSpan = (open || 1) * spanPct;
-      const dataMin = Math.min(...points);
-      const dataMax = Math.max(...points);
-      // Y 轴范围 = max(±5%, 数据实际范围 + 余量)
-      const dataSpan = Math.max(0, dataMax - dataMin) * 1.15;
-      const span = Math.max(floorSpan, dataSpan);
-      minVal = open - span;
-      maxVal = open + span;
+      const upper = (open || 1) * 1.10;
+      const lower = (open || 1) * 0.90;
+      minVal = lower;
+      maxVal = upper;
       if (hasBOLL) {
-        intra.boll.upper.forEach(v => { if (v !== null) maxVal = Math.max(maxVal, v); });
-        intra.boll.lower.forEach(v => { if (v !== null) minVal = Math.min(minVal, v); });
+        // BOLL / MA 即使超出涨跌停也只是参考线，不影响 Y 轴范围。
+        // 这里保留 clamp：如果 BOLL 短时突破，渲染时会被 yScale 顶到画布外。
       }
       if (hasMA) {
-        [...intra.ma5, ...intra.ma10, ...intra.ma20, ...intra.avgPrice].forEach(v => {
-          if (v !== null && typeof v === 'number') { minVal = Math.min(minVal, v); maxVal = Math.max(maxVal, v); }
-        });
+        // 同上：MA 不影响 Y 轴范围。
       }
     }
     const range = maxVal - minVal || 1;
@@ -1203,17 +1196,12 @@ function CandlestickChart({
   };
   subs.forEach((s, i) => { subTops[s.kind] = mainTop + mainH + 2 + i * (subH + 2); });
 
-  // Price range: OHLC of visible window + indicator extents (exclude live currentPrice to avoid Y-axis jitter)
-  const allValues = data.flatMap(d => [d.y[0], d.y[1], d.y[2], d.y[3]]);
-  let minVal = Math.min(...allValues);
-  let maxVal = Math.max(...allValues);
-  if (hasBOLL && indicatorSeries) {
-    indicatorSeries.boll.upper.forEach((v, i) => { if (v !== null && i >= seriesOffset && i < seriesOffset + data.length) maxVal = Math.max(maxVal, v); });
-    indicatorSeries.boll.lower.forEach((v, i) => { if (v !== null && i >= seriesOffset && i < seriesOffset + data.length) minVal = Math.min(minVal, v); });
-  }
-  const span = maxVal - minVal || 1;
-  minVal -= span * 0.05;
-  maxVal += span * 0.05;
+  // ⛳ K 线 Y 轴范围**固定**为 [open*0.9, open*1.1]，与 OHLC 实际范围解耦。
+  //   这样涨跌停线永远贴在图表上下边缘，监管/庄家看到的视觉幅度与真实幅度一致。
+  //   BOLL / MA 即使超出涨跌停也只是参考线，不影响 Y 轴范围。
+  const dayOpen = data[0]?.y?.[0] ?? data[0]?.open ?? 1;
+  const minVal = dayOpen * 0.9;
+  const maxVal = dayOpen * 1.1;
   const range = maxVal - minVal;
 
   const n = data.length;
@@ -1333,6 +1321,34 @@ function CandlestickChart({
             <path d={buildPath(indicatorSeries.ma20)} fill="none" stroke="#c084fc" strokeWidth={1.5} />
           </g>
         )}
+
+        {/* 涨跌停虚线 + 标签 (K 线图) */}
+        {(() => {
+          const upperY = yScale(dayOpen * 1.10);
+          const lowerY = yScale(dayOpen * 0.90);
+          return (
+            <g>
+              <rect x={padding.left} y={Math.max(mainTop, upperY)} width={width - padding.left - padding.right}
+                height={Math.max(0, mainTop + mainH - Math.max(mainTop, upperY))}
+                fill="rgba(220, 38, 38, 0.08)" />
+              <rect x={padding.left} y={lowerY} width={width - padding.left - padding.right}
+                height={Math.min(mainTop + mainH, lowerY) - lowerY}
+                fill="rgba(22, 163, 74, 0.08)" />
+              <line x1={padding.left} x2={width - padding.right} y1={upperY} y2={upperY}
+                stroke="rgba(220, 38, 38, 0.65)" strokeWidth={0.8} strokeDasharray="4 4" />
+              <line x1={padding.left} x2={width - padding.right} y1={lowerY} y2={lowerY}
+                stroke="rgba(22, 163, 74, 0.65)" strokeWidth={0.8} strokeDasharray="4 4" />
+              <text x={width - padding.right + 4} y={upperY + 4} fill="rgba(220, 38, 38, 0.9)" fontSize={10}
+                fontFamily="ui-monospace, monospace" textAnchor="start" fontWeight={600}>
+                ↑ 涨停 {(dayOpen * 1.10).toFixed(2)}
+              </text>
+              <text x={width - padding.right + 4} y={lowerY + 4} fill="rgba(22, 163, 74, 0.9)" fontSize={10}
+                fontFamily="ui-monospace, monospace" textAnchor="start" fontWeight={600}>
+                ↓ 跌停 {(dayOpen * 0.90).toFixed(2)}
+              </text>
+            </g>
+          );
+        })()}
 
         {/* Candles */}
         {data.map((d, i) => {

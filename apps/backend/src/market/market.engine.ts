@@ -8,8 +8,14 @@ import { Quote, KLine, OrderBook, NewsItem } from '../common/types';
  * 全局行情引擎 — 内存态。
  *
  * 每 200ms 一个 tick，对每个活跃 symbol 跑一次 GBM：
- *   price *= 1 + (rand - 0.48) * 0.0006
- * 地板价 = 1 元/股。
+ *   delta = drift (rand-0.48)*sigma + noise (rand-0.5)*sigma*0.5 + meanReversion
+ *   price *= 1 + delta
+ *   其中 meanReversion = -deviation*0.01（仅当 |deviation| > 5% 时）
+ *
+ * sigma = 0.008（明显波动）+ 噪声 + 均值回归 + 自然回调：
+ *   自然走势有波动有回调，庄家拉升在自然噪声里"显得只是顺势"
+ *
+ * 地板价 = 1 元/股；涨跌停 = prevClose * ±10% hard clamp。
  *
  * 设计原则：
  *   - 引擎只跑"活跃 match"，无 match 时静止；match 结束回放录像时也不动 ticker。
@@ -282,8 +288,9 @@ export class MarketEngine {
 
     // 每个 tick 遍历所有 symbol，各自独立 GBM（价格 + 成交量）
     // 这里用 STOCK_MAP 作为全量来源，确保推送侧与前端 watchlist 的 symbol 集合一致。
+    // sigma 从 0.0006 提到 0.008：自然波动更明显，庄家拉升会被自然噪声掩盖。
     const symbols = Object.keys(STOCK_MAP);
-    for (const sym of symbols) this.gbmStep(sym, 0.0006);
+    for (const sym of symbols) this.gbmStep(sym, 0.008);
 
     // 5 tick 更新盘口
     if (this.globalTick % 5 === 0) {
@@ -318,10 +325,22 @@ export class MarketEngine {
     const s = this.state.get(symbol);
     if (!s) return;
     const prevVolume = s.quote.volume;
-    // 200ms 一次，按前端 0.005*2 = 0.01% ~ 0.25% 区间有界；这里用 sigma = 0.0006 标准。
-    const delta = (Math.random() - 0.48) * sigma;
     const upper = s.quote.prevClose * 1.10;
     const lower = s.quote.prevClose * 0.90;
+    const refOpen = s.quote.open > 0 ? s.quote.open : s.quote.prevClose;
+
+    // ⛳ 改进 GBM：
+    //   1) 大 sigma (0.008) → 自然波动更明显，庄家拉升更难一眼看穿
+    //   2) 均值回归：偏离 open > 5% 时施加回归力 (deviation * 0.01)，价格会被慢慢拉回中心
+    //   3) 每 tick 加随机噪声 (random * sigma * 0.5)，防止轨迹过于平滑
+    //   4) 涨跌停 ±10% hard clamp，价格永远不会突破 [lower, upper]
+    const drift = (Math.random() - 0.48) * sigma;
+    const noise = (Math.random() - 0.5) * sigma * 0.5;
+    const deviation = (s.quote.price - refOpen) / refOpen; // 正=高于开盘
+    const meanReversion = Math.abs(deviation) > 0.05
+      ? -deviation * 0.01
+      : 0;
+    const delta = drift + noise + meanReversion;
     let next = Math.max(PRICE_FLOOR, s.quote.price * (1 + delta));
     if (next > upper) next = upper;
     if (next < lower) next = lower;

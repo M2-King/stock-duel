@@ -190,16 +190,11 @@ export default function MobileChart({ symbol: propSymbol }: Props) {
     const n = Math.max(points.length, 1);
     const open = points[0] ?? dayOpen;
 
-    const spanPct = 0.05;
-    const floorSpan = (open || 1) * spanPct;
-    const dataMin = Math.min(...points, limitDown);
-    const dataMax = Math.max(...points, limitUp);
-    const dataSpan = Math.max(0, dataMax - dataMin) * 1.15;
-    const span = Math.max(floorSpan * 2, dataSpan, (limitUp - limitDown) * 0.5);
-    let minVal = open - span / 2;
-    let maxVal = open + span / 2;
-    minVal = Math.min(minVal, limitDown);
-    maxVal = Math.max(maxVal, limitUp);
+    // ⛳ Y 轴范围固定为 [跌停, 涨停]，与开盘价无关。
+    //   这样涨跌停线永远贴在图表上下边缘，不管当前价格是高位还是低位都不会移动。
+    //   价格会在这个固定区间内运动。
+    const minVal = limitDown;
+    const maxVal = limitUp;
     const range = maxVal - minVal || 1;
 
     const xScale = (i: number) => pad.l + (i / Math.max(INTRA_WINDOW - 1, 1)) * innerW;
@@ -245,15 +240,13 @@ export default function MobileChart({ symbol: propSymbol }: Props) {
     const { pad, mainH, volH, volTop, innerW } = layout;
     const n = candles.length;
     const opens = candles.map((c) => c.open);
-    const highs = candles.map((c) => c.high);
-    const lows = candles.map((c) => c.low);
     const open0 = opens[0] ?? dayOpen;
 
-    let minVal = Math.min(...lows, limitDown);
-    let maxVal = Math.max(...highs, limitUp);
-    const span = maxVal - minVal || 1;
-    minVal -= span * 0.05;
-    maxVal += span * 0.05;
+    // ⛳ K 线 Y 轴同样固定为 [跌停, 涨停]。
+    //   影线 / 实体超过涨跌停会被服务端/客户端 clamp 到涨跌停，
+    //   所以 visual 范围与 limit 范围一致。
+    const minVal = limitDown;
+    const maxVal = limitUp;
     const range = maxVal - minVal || 1;
 
     const slotW = innerW / Math.max(n, 1);
