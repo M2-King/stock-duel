@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, type CSSProperties } from 'react';
 import { useGameStore } from '../store/gameStore';
+import { useDealerResources } from '../hooks/useCashBalance';
 import MarketChart from '../components/MarketChart';
 import { formatStockMetaLine } from '../shared/stockMeta';
 import {
@@ -57,8 +58,8 @@ export default function DealerPanelPage() {
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error' | 'info'; msg: string } | null>(null);
   const [flashTool, setFlashTool] = useState<ToolType | null>(null);
 
-  const cash = useGameStore((s) => s.cash);
-  const risk = useGameStore((s) => s.dealerResources?.riskIndex ?? 0);
+  // 资金单一来源 — useDealerResources 与 Tools 页 / TradePanel 永远一致
+  const { cash, riskIndex: risk } = useDealerResources();
   const symbol = currentQuote.symbol;
   const stockRestriction = getStockRestriction(symbol);
   const toolsLocked = !!stockRestriction;

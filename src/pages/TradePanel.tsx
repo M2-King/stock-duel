@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useGameStore } from '../store/gameStore';
+import { useCashBalance } from '../hooks/useCashBalance';
 import MarketChart from '../components/MarketChart';
 import { formatWan } from '../shared/tradeLimits';
 import { formatDealerCost } from '../shared/dealerFormulas';
@@ -9,9 +10,8 @@ export default function TradePanel() {
   const currentQuote = useGameStore((s) => s.currentQuote);
   const orderBook = useGameStore((s) => s.orderBook);
   const holdings = useGameStore((s) => s.holdings);
-  const cash = useGameStore((s) => s.cash);
-  const borrowed = useGameStore((s) => s.borrowed);
-  const leverage = useGameStore((s) => s.leverage);
+  // 资金单一来源 — useCashBalance 保证 cash/borrowed/leverage 永远和 Tools 页 / DealerPanel 同步
+  const { cash, borrowed, leverage, buyingPower } = useCashBalance();
   const setLeverage = useGameStore((s) => s.setLeverage);
   const placeOrder = useGameStore((s) => s.placeOrder);
   const purchaseInsiderInfo = useGameStore((s) => s.purchaseInsiderInfo);
@@ -23,8 +23,6 @@ export default function TradePanel() {
   const toggleWatchlist = useGameStore((s) => s.toggleWatchlist);
   const showToast = useGameStore((s) => s.showToast);
   const getStockRestriction = useGameStore((s) => s.getStockRestriction);
-  // Real available buying power = cash*leverage minus outstanding borrowed margin.
-  const buyingPower = Math.max(0, cash * leverage - borrowed);
   const positionCost = holdings.reduce((s, h) => s + h.avgPrice * h.shares, 0);
   const unrealizedPct = positionCost > 0 ? (unrealizedPnl / positionCost) * 100 : 0;
   const [side] = useState<'buy' | 'sell'>('buy');

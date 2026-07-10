@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useGameStore } from '../store/gameStore';
+import { useDealerResources } from '../hooks/useCashBalance';
 import TradePanel from './TradePanel';
 import DealerPanelPage from './DealerPanel';
 import RegulatorPanelPage from './RegulatorPanel';
@@ -40,7 +41,7 @@ function ToolsLobby({
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error' | 'info'; msg: string } | null>(null);
   const executeDealerAction = useGameStore((s) => s.executeDealerAction);
   const startSoloMatch = useGameStore((s) => s.startSoloMatch);
-  const cash = useGameStore((s) => s.cash);
+  const { cash } = useDealerResources();
   const currentSymbol = useGameStore((s) => s.currentQuote.symbol);
   const power = 50;
 

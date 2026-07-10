@@ -1,15 +1,19 @@
-import { useGameStore } from '../../store/gameStore';
+import { useCashBalance } from '../../hooks/useCashBalance';
 import { formatMobileCash } from '../utils/formatCash';
 
 interface Props {
   label?: string;
   className?: string;
+  /** 可选：是否显示带前缀的 "¥" */
+  withSymbol?: boolean;
 }
 
-/** 可用资金 — Tools / Trade 共用，只读 store.cash */
-export default function CashBalance({ className }: Props) {
-  const cash = useGameStore((s) => s.cash);
-  return (
-    <span className={className ?? 'value m-mono'}>{formatMobileCash(cash)}</span>
-  );
+/**
+ * 可用资金 — Tools / Trade 共用。
+ * 唯一来源：useCashBalance()（= store.cash），所有页面看到同一个值。
+ */
+export default function CashBalance({ className, withSymbol }: Props) {
+  const { cash } = useCashBalance();
+  const text = withSymbol ? `¥${formatMobileCash(cash)}` : formatMobileCash(cash);
+  return <span className={className ?? 'value m-mono'}>{text}</span>;
 }

@@ -10,6 +10,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useGameStore } from '../../store/gameStore';
+import { useCashBalance } from '../../hooks/useCashBalance';
 import MobileChart from '../components/Chart';
 import MobileDealerTools from '../components/DealerTools';
 import CashBalance from '../components/CashBalance';
@@ -23,11 +24,9 @@ export default function MobileTrade() {
   const role = useGameStore((s) => s.role);
   const gameStatus = useGameStore((s) => s.gameStatus);
 
-  // 散户分支
+  // 散户分支 — cash / borrowed / leverage 全部走 useCashBalance 单一源
   const currentQuote = useGameStore((s) => s.currentQuote);
-  const cash = useGameStore((s) => s.cash);
-  const borrowed = useGameStore((s) => s.borrowed);
-  const leverage = useGameStore((s) => s.leverage);
+  const { cash, leverage, borrowed } = useCashBalance();
   const placeOrder = useGameStore((s) => s.placeOrder);
   const backendMode = useGameStore((s) => s.backendMode);
   const setLeverage = useGameStore((s) => s.setLeverage);
@@ -80,9 +79,9 @@ export default function MobileTrade() {
   );
   const positionValue = ownedShares * currentQuote.price;
   const estAmount = qty * currentQuote.price;
-  const buyingPower = Math.max(0, cash * lev - borrowed);
+  const buyingPowerLive = Math.max(0, cash * lev - borrowed);
   const enoughShares = ownedShares >= qty;
-  const enoughCash = buyingPower >= estAmount;
+  const enoughCash = buyingPowerLive >= estAmount;
   const restriction = stockRestrictions[currentQuote.symbol];
 
   const confirm = () => {

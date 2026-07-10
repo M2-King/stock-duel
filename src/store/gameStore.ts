@@ -301,6 +301,9 @@ interface GameState {
   cash: number;
   // playerCash is a public alias for cash. Components (RegulatorPanel / RetailPanel
   // / TradePanel) read playerCash; setters below keep both fields in sync.
+  // ⛳ 所有组件只能通过 useCashBalance() 读 cash，禁止直接 useGameStore((s) => s.playerCash)。
+  //   写 cash 必须走 cashSyncPatch() 或 _syncPortfolioFromServer()，
+  //   禁止在组件或别处 useState 一个 cash / capital / availableCash。
   playerCash: number;
   todayPnl: number;
   todayPnlPercent: number;
